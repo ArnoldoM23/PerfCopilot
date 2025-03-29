@@ -1,59 +1,174 @@
-# Function Performance Analyzer
+# PerfCopilot 🚀
 
-A VS Code extension that analyzes and compares function performance using Benny.js and OpenAI's GPT-4.
+<div align="center">
+  <img src="https://raw.githubusercontent.com/ArnoldoM23/PerfCopilot/main/assets/logo.png" alt="PerfCopilot Logo" width="200" style="border-radius: 10px;">
+
+  <p><strong>AI-powered JavaScript Function Performance Analyzer for VS Code</strong></p>
+  
+  <p>
+    <a href="#features">Features</a> •
+    <a href="#installation">Installation</a> •
+    <a href="#usage">Usage</a> •
+    <a href="#examples">Examples</a> •
+    <a href="#troubleshooting">Troubleshooting</a> •
+    <a href="#license">License</a>
+  </p>
+</div>
 
 ## Features
 
-- Select any JavaScript function in your code
-- Get an alternative implementation using GPT-4
-- Compare performance between original and alternative implementations
-- View detailed performance metrics and explanations
-- Beautiful webview interface showing results
-
-## Requirements
-
-- VS Code 1.85.0 or higher
-- Node.js and npm
-- OpenAI API key
+- 📊 Compare the performance of different JavaScript function implementations
+- 🧠 Get intelligent alternative implementations for your functions
+- 📈 View detailed performance metrics and comparisons
+- 🎯 Find the most efficient implementation for your specific use case
+- 💡 Learn optimization techniques through practical examples
 
 ## Installation
 
-1. Clone this repository
-2. Run `npm install` to install dependencies
-3. Set your OpenAI API key as an environment variable:
-   ```bash
-   export OPENAI_API_KEY='your-api-key-here'
-   ```
-4. Press F5 to start debugging the extension
+### From VSIX File
+
+1. Download the `.vsix` file from the [latest release](https://github.com/ArnoldoM23/PerfCopilot/releases)
+2. In VS Code, go to the Extensions view (Ctrl+Shift+X)
+3. Click the "..." menu in the top-right of the Extensions view
+4. Select "Install from VSIX..."
+5. Select the downloaded `.vsix` file
+
+### From Source
+
+```bash
+# Clone the repository
+git clone https://github.com/ArnoldoM23/PerfCopilot.git
+
+# Navigate to the directory
+cd PerfCopilot
+
+# Install dependencies
+npm install
+
+# Package the extension
+npm run package
+
+# Install the extension
+code --install-extension perfcopilot-0.0.1.vsix
+```
 
 ## Usage
 
-1. Open any JavaScript file in VS Code
-2. Select a function you want to analyze
-3. Right-click and select "Analyze Function Performance" from the context menu
-4. View the performance comparison in the new webview panel
+### 1. Select a Function
 
-## How it Works
+For best results, select a **complete function declaration** including:
+- The `function` keyword
+- The function name
+- Parameters
+- The entire function body with curly braces
 
-1. The extension captures the selected function
-2. Uses GPT-4 to generate an alternative implementation
-3. Uses Benny.js to benchmark both implementations
-4. Displays results with detailed performance metrics and explanations
+✅ **Correct selection:**
 
-## Extension Settings
+```javascript
+function sumArray(arr) {
+    let sum = 0;
+    for (let i = 0; i < arr.length; i++) {
+        sum += arr[i];
+    }
+    return sum;
+}
+```
 
-This extension contributes the following commands:
+❌ **Incorrect selection:**
+```javascript
+let sum = 0;
+for (let i = 0; i < arr.length; i++) {
+    sum += arr[i];
+}
+return sum;
+```
 
-* `function-performance-analyzer.analyzeFunction`: Analyze the selected function's performance
+### 2. Analyze the Function
 
-## Known Issues
+1. Right-click on the selected function
+2. Choose "Analyze Function Performance" from the context menu
+3. Either:
+   - Enter an alternative implementation when prompted, or
+   - Press Enter to let PerfCopilot generate an alternative
 
-- Currently only supports JavaScript functions
-- Requires an active internet connection for GPT-4 integration
-- Performance results may vary based on system load and resources
+### 3. View Results
 
-## Release Notes
+A webview will open showing:
+- Both function implementations
+- Performance metrics for each function
+- Which implementation is faster and by how much
+- Possible reasons for the performance difference
 
-### 0.0.1
+## Examples
 
-Initial release of Function Performance Analyzer 
+Here are some examples of functions you can analyze:
+
+### Array Sum Example
+
+```javascript
+// Select this entire function
+function sumArray(arr) {
+    let sum = 0;
+    for (let i = 0; i < arr.length; i++) {
+        sum += arr[i];
+    }
+    return sum;
+}
+
+// PerfCopilot will suggest using reduce:
+function alternativeSumArray(arr) {
+    return arr.reduce((sum, item) => sum + item, 0);
+}
+```
+
+### Find Non-repeating Character Example
+
+```javascript
+// Select this entire function
+function findFirstNonRepeating(str) {
+    const charCount = {};
+    
+    // Count occurrences of each character
+    for (let char of str) {
+        charCount[char] = (charCount[char] || 0) + 1;
+    }
+    
+    // Find first character with count of 1
+    for (let char of str) {
+        if (charCount[char] === 1) {
+            return char;
+        }
+    }
+    
+    return null;
+}
+```
+
+## Troubleshooting
+
+### Error: "Unexpected token 'const'"
+
+This error occurs when your function contains modern JavaScript syntax that can't be evaluated.
+
+**Solutions:**
+1. Make sure you're selecting a complete function declaration (including the `function` keyword and all brackets)
+2. Try using `var` instead of `const` or `let` inside your function
+3. Check the "PerfCopilot: Show Logs" output channel for detailed information
+
+### Function Not Being Evaluated Correctly
+
+**Solutions:**
+1. Make sure your function is self-contained (doesn't rely on external variables)
+2. Add test arguments inside the function if it requires specific inputs
+3. Simplify complex functions for testing
+
+### View Detailed Logs
+
+If you encounter any issues:
+1. Open the Command Palette (Ctrl+Shift+P)
+2. Type and select "PerfCopilot: Show Logs"
+3. Review the detailed logs to understand what went wrong
+
+## License
+
+Released under the [MIT License](LICENSE). 

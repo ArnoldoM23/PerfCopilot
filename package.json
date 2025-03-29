@@ -1,20 +1,34 @@
 {
   "name": "perfcopilot",
   "displayName": "PerfCopilot",
-  "description": "Analyze and compare function performance using Benny.js",
+  "description": "AI-powered JavaScript function performance analyzer for VS Code",
   "version": "0.0.1",
   "publisher": "ArnoldoM23",
   "private": false,
   "license": "MIT",
+  "icon": "assets/logo.png",
+  "keywords": [
+    "javascript",
+    "performance",
+    "benchmark",
+    "optimization",
+    "function"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/ArnoldoM23/PerfCopilot.git"
+  },
+  "homepage": "https://github.com/ArnoldoM23/PerfCopilot",
+  "bugs": {
+    "url": "https://github.com/ArnoldoM23/PerfCopilot/issues"
   },
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Programming Languages",
+    "Snippets"
   ],
   "activationEvents": [
     "onCommand:perfcopilot.analyzeFunction"
@@ -35,7 +49,8 @@
       "editor/context": [
         {
           "command": "perfcopilot.analyzeFunction",
-          "when": "editorHasSelection"
+          "when": "editorHasSelection",
+          "group": "navigation"
         }
       ]
     }

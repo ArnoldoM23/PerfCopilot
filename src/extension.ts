@@ -283,7 +283,7 @@ async function runPerformanceTests(originalFunction: string, alternativeFunction
         // Wrap function creation in a timeout to catch potential syntax errors
         outputChannel.appendLine('Creating test functions');
         
-        // Create a safer evaluation environment
+        // Create a safer evaluation environment that supports modern JS
         const evalFunctionSafely = (funcStr: string): Function => {
             try {
                 // Check if it's a complete function declaration
@@ -292,11 +292,16 @@ async function runPerformanceTests(originalFunction: string, alternativeFunction
                     const nameMatch = funcStr.match(/function\s+([^(]+)/);
                     const funcName = nameMatch ? nameMatch[1].trim() : 'anonymousFunc';
                     
-                    // Create a function in the global scope (safer than eval)
-                    // Using Function constructor to create a function from string
+                    // Convert all const/let to var for better compatibility
+                    let processedCode = funcStr
+                        .replace(/const\s+/g, 'var ')
+                        .replace(/let\s+/g, 'var ');
+                    
+                    // Create a function using the Function constructor with 'use strict'
                     const createFunc = new Function(`
+                        "use strict";
                         try {
-                            ${funcStr}
+                            ${processedCode}
                             return ${funcName};
                         } catch (e) {
                             throw new Error("Error creating function: " + e.message);
