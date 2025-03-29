@@ -17,24 +17,24 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:function-performance-analyzer.analyzeFunction"
+    "onCommand:perfcopilot.analyzeFunction"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "function-performance-analyzer.analyzeFunction",
+        "command": "perfcopilot.analyzeFunction",
         "title": "Analyze Function Performance"
       },
       {
-        "command": "function-performance-analyzer.showLogs",
-        "title": "Function Performance Analyzer: Show Logs"
+        "command": "perfcopilot.showLogs",
+        "title": "PerfCopilot: Show Logs"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "function-performance-analyzer.analyzeFunction",
+          "command": "perfcopilot.analyzeFunction",
           "when": "editorHasSelection"
         }
       ]

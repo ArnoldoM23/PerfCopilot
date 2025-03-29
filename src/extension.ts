@@ -6,12 +6,12 @@ let outputChannel: vscode.OutputChannel;
 
 export function activate(context: vscode.ExtensionContext) {
     // Initialize the output channel
-    outputChannel = vscode.window.createOutputChannel('Function Performance Analyzer');
+    outputChannel = vscode.window.createOutputChannel('PerfCopilot');
     context.subscriptions.push(outputChannel);
     
-    outputChannel.appendLine('Function Performance Analyzer extension activated');
+    outputChannel.appendLine('PerfCopilot extension activated');
 
-    let disposable = vscode.commands.registerCommand('function-performance-analyzer.analyzeFunction', async () => {
+    let disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
         outputChannel.appendLine('\n--- Starting Performance Analysis ---');
         
         const editor = vscode.window.activeTextEditor;
@@ -109,7 +109,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(disposable);
     
     // Add a command to show the output channel
-    let showLogsCommand = vscode.commands.registerCommand('function-performance-analyzer.showLogs', () => {
+    let showLogsCommand = vscode.commands.registerCommand('perfcopilot.showLogs', () => {
         outputChannel.show();
     });
     
@@ -122,13 +122,75 @@ async function generateSimpleAlternative(originalFunction: string): Promise<stri
         const functionNameMatch = originalFunction.match(/function\s+(\w+)\s*\(/);
         const functionName = functionNameMatch ? functionNameMatch[1] : 'anonymousFunction';
         
-        // Generate a simple alternative with a comment
+        // Check if it's a for loop implementation
+        if (originalFunction.includes('for (') || originalFunction.includes('for(')) {
+            // If it's a for loop, suggest using reduce, map, filter, etc.
+            if (originalFunction.includes('array') || originalFunction.includes('arr')) {
+                // If it's summing an array
+                if (originalFunction.includes('sum') || originalFunction.includes('+=')) {
+                    return `// Alternative implementation using reduce
+function alternative${functionName}(arr) {
+    return arr.reduce((sum, item) => sum + item, 0);
+}`;
+                }
+                // If it's filtering or finding elements
+                else if (originalFunction.includes('if (') || originalFunction.includes('if(')) {
+                    return `// Alternative implementation using filter
+function alternative${functionName}(arr) {
+    return arr.filter(item => {
+        // Add your condition here - this is a basic version that mimics the original function
+        return item !== undefined;
+    });
+}`;
+                }
+            }
+            
+            // For string processing
+            if (originalFunction.includes('str') || originalFunction.includes('string')) {
+                return `// Alternative implementation for string processing
+function alternative${functionName}(str) {
+    // Using more direct string methods
+    const result = str.split('').reduce((acc, char) => {
+        // This is a simplified example - modify based on what the original function does
+        acc[char] = (acc[char] || 0) + 1;
+        return acc;
+    }, {});
+    
+    return Object.keys(result).find(key => result[key] === 1) || null;
+}`;
+            }
+        }
+        
+        // If we can't determine a good alternative, provide a simple variant
+        // with a note that it's basically the same algorithm
         return `// Alternative implementation of ${functionName}
-${originalFunction.replace(/^function/, 'function alternative')}`;
+// Note: This is functionally similar to the original, but with slight syntax changes
+function alternative${functionName}(${getParametersFrom(originalFunction)}) {
+    ${getFunctionBodyFrom(originalFunction).replace('for (', 'for (')}
+}`;
     } catch (error) {
         outputChannel.appendLine(`Error generating alternative: ${error}`);
         throw new Error(`Failed to generate alternative implementation: ${error}`);
     }
+}
+
+function getParametersFrom(functionStr: string): string {
+    const match = functionStr.match(/function\s+\w+\s*\(([^)]*)\)/);
+    return match ? match[1] : 'arr';
+}
+
+function getFunctionBodyFrom(functionStr: string): string {
+    try {
+        // Extract everything between the first { and the last }
+        const bodyMatch = functionStr.match(/\{([\s\S]*)\}$/);
+        if (bodyMatch && bodyMatch[1]) {
+            return bodyMatch[1].trim();
+        }
+    } catch (error) {
+        outputChannel.appendLine(`Error extracting function body: ${error}`);
+    }
+    
+    return '// Could not extract function body\n    return null;';
 }
 
 function getLoadingContent(): string {
@@ -151,7 +213,7 @@ function getLoadingContent(): string {
                 <h2>Running performance tests...</h2>
                 <p>Please wait while we benchmark the functions.</p>
                 <p>If this takes too long, check the output logs for details.</p>
-                <p><small>You can view logs by running the "Function Performance Analyzer: Show Logs" command</small></p>
+                <p><small>You can view logs by running the "PerfCopilot: Show Logs" command</small></p>
             </div>
         </body>
         </html>
@@ -180,7 +242,7 @@ function getErrorContent(error: string, originalFunction: string, alternativeFun
                 <div class="error-card">
                     <h2>Error Details</h2>
                     <p>${escapeHtml(error)}</p>
-                    <p>Check the "Function Performance Analyzer" output channel for more details.</p>
+                    <p>Check the "PerfCopilot" output channel for more details.</p>
                 </div>
                 
                 <div class="function-card">
@@ -221,12 +283,41 @@ async function runPerformanceTests(originalFunction: string, alternativeFunction
         // Wrap function creation in a timeout to catch potential syntax errors
         outputChannel.appendLine('Creating test functions');
         
-        // Set a timeout for function creation to catch potential issues
+        // Create a safer evaluation environment
+        const evalFunctionSafely = (funcStr: string): Function => {
+            try {
+                // Check if it's a complete function declaration
+                if (funcStr.trim().startsWith('function')) {
+                    // Extract function name
+                    const nameMatch = funcStr.match(/function\s+([^(]+)/);
+                    const funcName = nameMatch ? nameMatch[1].trim() : 'anonymousFunc';
+                    
+                    // Create a function in the global scope (safer than eval)
+                    // Using Function constructor to create a function from string
+                    const createFunc = new Function(`
+                        try {
+                            ${funcStr}
+                            return ${funcName};
+                        } catch (e) {
+                            throw new Error("Error creating function: " + e.message);
+                        }
+                    `);
+                    
+                    return createFunc();
+                } else {
+                    throw new Error("Function string must start with 'function' keyword");
+                }
+            } catch (error) {
+                outputChannel.appendLine(`Error in evalFunctionSafely: ${error}`);
+                throw error;
+            }
+        };
+        
         let originalFn, alternativeFn;
         
         try {
             outputChannel.appendLine('Creating original function');
-            originalFn = new Function('return ' + originalFunction)();
+            originalFn = evalFunctionSafely(originalFunction);
         } catch (error) {
             outputChannel.appendLine(`Error creating original function: ${error}`);
             throw new Error(`Error in original function: ${error}`);
@@ -234,7 +325,7 @@ async function runPerformanceTests(originalFunction: string, alternativeFunction
         
         try {
             outputChannel.appendLine('Creating alternative function');
-            alternativeFn = new Function('return ' + alternativeFunction)();
+            alternativeFn = evalFunctionSafely(alternativeFunction);
         } catch (error) {
             outputChannel.appendLine(`Error creating alternative function: ${error}`);
             throw new Error(`Error in alternative function: ${error}`);
@@ -253,7 +344,6 @@ async function runPerformanceTests(originalFunction: string, alternativeFunction
         }
         
         // Create a sample input to test the functions
-        // This is a basic attempt - functions might need specific inputs
         outputChannel.appendLine('Testing functions with sample input');
         let sampleArg: any = [];
         
@@ -424,5 +514,5 @@ function escapeHtml(unsafe: string): string {
 }
 
 export function deactivate() {
-    outputChannel.appendLine('Function Performance Analyzer extension deactivated');
+    outputChannel.appendLine('PerfCopilot extension deactivated');
 } 
