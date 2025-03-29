@@ -1,0 +1,19 @@
+# VS Code files
+.vscode-test/
+*.vsix
+
+# Node modules
+node_modules/
+
+# Build output
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+.DS_Store
+Thumbs.db 
