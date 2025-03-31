@@ -15,6 +15,25 @@ export function activate(context: vscode.ExtensionContext) {
     // Register the command to analyze a function
     const disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
         try {
+            // First check if Copilot is available
+            const copilotExtension = vscode.extensions.getExtension('GitHub.copilot');
+            if (!copilotExtension) {
+                vscode.window.showErrorMessage('GitHub Copilot extension is required but not installed. Please install it from the marketplace.');
+                return;
+            }
+            
+            outputChannel.appendLine(`Found GitHub Copilot extension (${copilotExtension.packageJSON.version})`);
+            
+            // Check if inline suggestions are enabled
+            const config = vscode.workspace.getConfiguration('editor');
+            const inlineSuggestEnabled = config.get('inlineSuggest.enabled');
+            
+            if (!inlineSuggestEnabled) {
+                // Try to enable it
+                outputChannel.appendLine('Inline suggestions are disabled, attempting to enable temporarily');
+                await config.update('inlineSuggest.enabled', true, true);
+            }
+            
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active editor found');
@@ -51,6 +70,8 @@ export function activate(context: vscode.ExtensionContext) {
                 const analysisContent = createAnalysisContent(selectedText);
                 const tempFilePath = await createTempFile(analysisContent, 'perf-analysis.js');
                 
+                outputChannel.appendLine(`Created temp file at: ${tempFilePath}`);
+                
                 // Open the temp file
                 const document = await vscode.workspace.openTextDocument(tempFilePath);
                 const tempEditor = await vscode.window.showTextDocument(document, { preview: true });
@@ -66,11 +87,16 @@ export function activate(context: vscode.ExtensionContext) {
                 // Tell the user what's happening
                 vscode.window.showInformationMessage('Please wait while Copilot analyzes the function. This may take a few seconds...');
                 
-                // Wait 5 seconds to ensure Copilot has time to analyze and provide suggestions
+                // Force trigger inline suggestions
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+                outputChannel.appendLine('Triggered inline suggestions');
+                
+                // Wait a bit to ensure Copilot has time to analyze and provide suggestions
                 await new Promise(resolve => setTimeout(resolve, 5000));
                 
                 // Check if we got an inline suggestion and accept it
                 await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
+                outputChannel.appendLine('Accepted inline suggestions');
                 
                 // Wait a little more for the suggestion to be accepted
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -79,19 +105,32 @@ export function activate(context: vscode.ExtensionContext) {
                 const analysisText = document.getText();
                 const analysis = extractAnalysis(analysisText, analysisContent);
                 
+                outputChannel.appendLine(`Analysis extracted (${analysis.length} chars)`);
+                
                 // Close the temp editor
                 await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
                 
                 // Delete the temp file
                 try {
                     fs.unlinkSync(tempFilePath);
+                    outputChannel.appendLine('Deleted temp file');
                 } catch (err) {
                     // Ignore deletion errors
+                    outputChannel.appendLine(`Failed to delete temp file: ${err}`);
+                }
+                
+                // Check if we actually got any analysis
+                if (analysis.length < 50) {
+                    outputChannel.appendLine('Analysis looks too short, might not have received Copilot suggestions');
+                    panel.webview.html = getErrorHtml(`Could not get analysis from Copilot. Please make sure GitHub Copilot is properly installed, signed in, and providing suggestions in your editor.`);
+                    return;
                 }
                 
                 // Create the benchmark content
                 const benchmarkContent = createBenchmarkContent(selectedText);
                 const benchTempFilePath = await createTempFile(benchmarkContent, 'perf-benchmark.js');
+                
+                outputChannel.appendLine(`Created benchmark temp file at: ${benchTempFilePath}`);
                 
                 // Open the benchmark temp file
                 const benchDocument = await vscode.workspace.openTextDocument(benchTempFilePath);
@@ -108,11 +147,16 @@ export function activate(context: vscode.ExtensionContext) {
                 // Show info message
                 vscode.window.showInformationMessage('Now generating benchmark comparison...');
                 
+                // Force trigger inline suggestions
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+                outputChannel.appendLine('Triggered benchmark inline suggestions');
+                
                 // Wait for Copilot to analyze and provide suggestions
                 await new Promise(resolve => setTimeout(resolve, 5000));
                 
                 // Accept the suggestion
                 await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
+                outputChannel.appendLine('Accepted benchmark inline suggestions');
                 
                 // Wait a little more
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -121,14 +165,18 @@ export function activate(context: vscode.ExtensionContext) {
                 const benchmarkText = benchDocument.getText();
                 const benchmarkResults = extractAnalysis(benchmarkText, benchmarkContent);
                 
+                outputChannel.appendLine(`Benchmark results extracted (${benchmarkResults.length} chars)`);
+                
                 // Close the benchmark editor
                 await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
                 
                 // Delete the benchmark temp file
                 try {
                     fs.unlinkSync(benchTempFilePath);
+                    outputChannel.appendLine('Deleted benchmark temp file');
                 } catch (err) {
                     // Ignore deletion errors
+                    outputChannel.appendLine(`Failed to delete benchmark temp file: ${err}`);
                 }
                 
                 // Combine the analysis and benchmark results
@@ -146,9 +194,20 @@ ${benchmarkResults}`;
                 // Bring the panel to focus
                 panel.reveal(vscode.ViewColumn.Two);
                 
+                // Restore inline suggest setting if we changed it
+                if (!inlineSuggestEnabled) {
+                    await config.update('inlineSuggest.enabled', false, true);
+                    outputChannel.appendLine('Restored inline suggestions setting');
+                }
+                
             } catch (error: any) {
                 outputChannel.appendLine(`Error during analysis: ${error.message}`);
                 panel.webview.html = getErrorHtml(`An error occurred: ${error.message}. Make sure GitHub Copilot is properly installed and signed in.`);
+                
+                // Restore inline suggest setting if needed
+                if (!inlineSuggestEnabled) {
+                    await config.update('inlineSuggest.enabled', false, true);
+                }
             }
             
         } catch (error: any) {
