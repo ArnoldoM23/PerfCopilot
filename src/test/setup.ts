@@ -178,7 +178,8 @@ const mockVscode = {
     },
     workspace: {
         openTextDocument: jest.fn().mockResolvedValue(mockTextDocument),
-        workspaceFolders: [{ uri: { fsPath: '/workspace' } }]
+        workspaceFolders: [{ uri: { fsPath: '/workspace' } }],
+        applyEdit: jest.fn().mockResolvedValue(true)
     },
     commands: {
         registerCommand: jest.fn((command: string, callback: (...args: any[]) => any) => {
@@ -206,6 +207,28 @@ const mockVscode = {
             return undefined;
         })
     },
+    WorkspaceEdit: jest.fn().mockImplementation(() => ({
+        insert: jest.fn(),
+        delete: jest.fn(),
+        replace: jest.fn(),
+        has: jest.fn().mockReturnValue(false)
+    })),
+    Position: jest.fn().mockImplementation((line, character) => ({
+        line,
+        character
+    })),
+    Range: jest.fn().mockImplementation((start, end) => ({
+        start,
+        end
+    })),
+    Selection: jest.fn().mockImplementation((anchor, active) => ({
+        anchor, 
+        active,
+        start: anchor,
+        end: active,
+        isEmpty: false,
+        isReversed: false
+    })),
     Uri: {
         file: jest.fn(path => ({ 
             fsPath: path,
@@ -213,7 +236,34 @@ const mockVscode = {
             path,
             authority: '',
             query: '',
-            fragment: ''
+            fragment: '',
+            toJSON: function() {
+                return {
+                    scheme: this.scheme,
+                    authority: this.authority,
+                    path: this.path,
+                    query: this.query,
+                    fragment: this.fragment
+                };
+            }
+        })),
+        parse: jest.fn(uri => ({
+            fsPath: '/test/path',
+            scheme: 'untitled',
+            path: '/test/path',
+            authority: '',
+            query: '',
+            fragment: '',
+            with: jest.fn().mockReturnThis(),
+            toJSON: function() {
+                return {
+                    scheme: this.scheme,
+                    authority: this.authority,
+                    path: this.path,
+                    query: this.query,
+                    fragment: this.fragment
+                };
+            }
         }))
     },
     extensions: {

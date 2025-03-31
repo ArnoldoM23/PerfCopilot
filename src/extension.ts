@@ -1,103 +1,139 @@
 import * as vscode from 'vscode';
 import benny from 'benny';
 
-// Create an output channel for logging
-let outputChannel: vscode.OutputChannel;
-
 /**
  * Interface for benchmark results from Benny
  */
-interface CaseResultWithDiff {
+interface BenchmarkResult {
     name: string;
-    ops: number;  // Operations per second
+    ops: number;
     margin: number;
-    percentSlower: number;
-    samples: number;
+    percentSlower?: number;
 }
 
+interface BenchmarkResults {
+    fastest?: string;
+    results: BenchmarkResult[];
+    alternatives?: string[];
+}
+
+// The extension output channel
+const outputChannel = vscode.window.createOutputChannel('PerfCopilot');
+
 /**
- * Activates the extension
+ * @param {vscode.ExtensionContext} context
  */
 export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('PerfCopilot');
     outputChannel.appendLine('PerfCopilot extension activated');
     
-    let disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
+    // Register the command to analyze a function
+    const disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
         try {
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active editor found');
                 return;
             }
-
+            
+            // Get the selected text
             const selection = editor.selection;
-            if (selection.isEmpty) {
-                vscode.window.showErrorMessage('Please select a function to analyze');
+            const selectedText = editor.document.getText(selection);
+            
+            if (!selectedText) {
+                vscode.window.showErrorMessage('No function selected');
                 return;
             }
-
-            const originalFunction = editor.document.getText(selection);
-            outputChannel.appendLine(`Analyzing function: ${originalFunction.substring(0, 100)}...`);
-
-            // Create a WebView panel
+            
+            outputChannel.appendLine(`Analyzing function: ${selectedText.substring(0, 100)}...`);
+            
+            // Create webview panel
             const panel = vscode.window.createWebviewPanel(
-                'functionAnalysis',
-                'Function Performance Analysis',
+                'perfcopilot',
+                'Function Analysis',
                 vscode.ViewColumn.Two,
-                { enableScripts: true }
+                {
+                    enableScripts: true,
+                    retainContextWhenHidden: true
+                }
             );
-
-            // Show loading indicator
+            
+            // Set initial HTML
             panel.webview.html = getLoadingContent();
             
-            // Create a temporary document for Copilot to analyze
-            const tempDoc = await vscode.workspace.openTextDocument({
-                content: `
-/* 
- * PERFORMANCE ANALYSIS TASK
- * ------------------------
- * 1. Analyze this JavaScript function
- * 2. Generate 1-2 alternative implementations 
- * 3. Compare performance using Benny or other benchmarking method
- * 4. Return a complete analysis with time/space complexity and benchmark results
- * 
- * FUNCTION TO ANALYZE:
- * ${originalFunction}
- *
- * IMPORTANT: Do not try to execute this code. Instead, analyze it theoretically and
- * provide improvements based on algorithmic understanding.
- * 
- * FORMAT YOUR RESPONSE AS FOLLOWS:
- * 
- * Time Complexity: O(?)
- * Space Complexity: O(?)
- * 
- * Analysis:
- * (Your detailed analysis here)
- * 
- * Alternative Implementation:
- * \`\`\`javascript
- * // Your improved implementation
- * function improvedVersion() {
- *   // Code here
- * }
- * \`\`\`
- * 
- * Benchmark Results:
- * \`\`\`json
- * {
- *   "fastest": "improvedVersion",
- *   "results": [
- *     {"name": "original", "ops": 1000000, "margin": 0.5},
- *     {"name": "improvedVersion", "ops": 1500000, "margin": 0.5}
- *   ]
- * }
- * \`\`\`
- */
+            // Store original function for later comparison
+            const originalFunction = selectedText;
+            
+            // Prepare a document with setup for Copilot analysis
+            // Create a template that will be completed by Copilot
+            const template = `
+// Function to analyze:
+${originalFunction}
 
-// Begin analysis:
-`,
-                language: 'javascript'
+/*
+Please provide a comprehensive performance analysis of the function above, including:
+1. Time and space complexity analysis
+2. Explanation of algorithmic approach and possible bottlenecks
+3. Compare performance using Benny or other benchmarking method
+4. Return a complete analysis with time/space complexity and benchmark results
+
+Format the output as follows:
+===========================
+# Performance Analysis
+
+## Time Complexity
+[Explanation of the time complexity]
+
+## Space Complexity
+[Explanation of the space complexity]
+
+## Algorithm Analysis
+[Detailed explanation of how the algorithm works and potential bottlenecks]
+
+## Suggested Optimizations
+[Explain potential optimizations]
+
+## Alternative Implementations
+[Provide 1-3 alternative implementations with explanations]
+
+## Benchmark Results:
+\`\`\`json
+{
+  "fastest": "implementation name",
+  "results": [
+    {
+      "name": "original",
+      "ops": number of operations per second,
+      "margin": error margin,
+      "percentSlower": percent slower than fastest
+    },
+    {
+      "name": "alternative1",
+      "ops": number of operations per second,
+      "margin": error margin,
+      "percentSlower": percent slower than fastest
+    }
+  ]
+}
+\`\`\`
+===========================
+*/
+`;
+            
+            // Create a temporary document with the template
+            const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
+            const tempDoc = await vscode.workspace.openTextDocument(tempUri);
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(tempUri, new vscode.Position(0, 0), template);
+            await vscode.workspace.applyEdit(edit);
+            
+            await vscode.window.showTextDocument(tempDoc, {
+                preview: false,
+                viewColumn: vscode.ViewColumn.One,
+                preserveFocus: true,
+                selection: new vscode.Range(
+                    new vscode.Position(0, 0),
+                    new vscode.Position(0, 0)
+                )
             });
 
             // Get Copilot's complete analysis and implementation
@@ -110,20 +146,39 @@ export function activate(context: vscode.ExtensionContext) {
             // Extract benchmark results from the analysis
             try {
                 // Look for JSON inside the analysis - specifically in the Benchmark Results section
-                const jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?```json[\s\S]*?([\s\S]*?)[\s\S]*?```/);
-                let benchmarkResults = {};
+                // Improved regex that's more flexible with whitespace and newlines
+                const jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?```(?:json)?([\s\S]*?)```/);
+                let benchmarkResults: BenchmarkResults = { results: [] };
                 
                 if (jsonMatch && jsonMatch[1]) {
                     try {
-                        const jsonText = jsonMatch[1].trim();
+                        // Clean up the extracted JSON text
+                        let jsonText = jsonMatch[1].trim();
+                        
+                        // Remove any extra backticks or comments that might be in the JSON
+                        jsonText = jsonText.replace(/^```.*$/gm, '').trim();
+                        
                         outputChannel.appendLine('Extracted benchmark JSON:');
                         outputChannel.appendLine(jsonText);
+                        
+                        // Try to parse the JSON
                         benchmarkResults = JSON.parse(jsonText);
                         outputChannel.appendLine('Successfully parsed benchmark data');
+                        
+                        // Validate the benchmark results structure
+                        if (!benchmarkResults.hasOwnProperty('results')) {
+                            outputChannel.appendLine('Warning: Benchmark results missing "results" array');
+                            benchmarkResults = { 
+                                ...benchmarkResults,
+                                results: []
+                            };
+                        }
                     } catch (jsonError: any) {
                         outputChannel.appendLine(`Error parsing benchmark JSON: ${jsonError.message}`);
                         // Continue with the analysis even if benchmark parsing fails
                     }
+                } else {
+                    outputChannel.appendLine('Warning: No benchmark results section found in the analysis');
                 }
                 
                 // Extract alternative implementations
@@ -143,7 +198,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 
                 // Create results object
-                const results = {
+                const results: BenchmarkResults = {
                     ...(benchmarkResults as any),
                     alternatives: implementations
                 };
@@ -152,7 +207,7 @@ export function activate(context: vscode.ExtensionContext) {
                 panel.webview.html = getWebviewContentWithAnalysis(results, analysis);
             } catch (error: any) {
                 outputChannel.appendLine(`Error processing analysis: ${error.message}`);
-                panel.webview.html = getWebviewContentWithAnalysis({}, analysis);
+                panel.webview.html = getWebviewContentWithAnalysis({ results: [] }, analysis);
             }
             
             panel.reveal(vscode.ViewColumn.Two);
@@ -174,7 +229,7 @@ export function activate(context: vscode.ExtensionContext) {
 /**
  * Gets a code suggestion from GitHub Copilot
  */
-async function getCopilotSuggestion(document: vscode.TextDocument, line: number): Promise<string> {
+async function getCopilotSuggestion(document: vscode.TextDocument, _line: number): Promise<string> {
     const copilot = vscode.extensions.getExtension('GitHub.copilot');
     if (!copilot) {
         throw new Error('GitHub Copilot extension is not installed');
@@ -184,15 +239,68 @@ async function getCopilotSuggestion(document: vscode.TextDocument, line: number)
         await copilot.activate();
     }
 
-    // Get the full document text instead of just triggering at the cursor position
-    const fullPrompt = document.getText();
-    outputChannel.appendLine(`Sending prompt to Copilot: ${fullPrompt.substring(0, 500)}...`);
+    // For benchmark results, we need to ensure the document contains clear instructions
+    // for Copilot to format the results in a consistent way
+    const currentText = document.getText();
+    let documentText = currentText;
+    
+    // Add explicit instructions for benchmark results format if not already present
+    if (!currentText.includes("FORMAT INSTRUCTIONS FOR BENCHMARK RESULTS")) {
+        const formatInstructions = `
+// FORMAT INSTRUCTIONS FOR BENCHMARK RESULTS:
+// 1. Always include a 'Benchmark Results:' section with valid JSON in the following format:
+// \`\`\`json
+// {
+//   "fastest": "functionName",
+//   "results": [
+//     {
+//       "name": "functionName",
+//       "ops": 1000000,
+//       "margin": 1.5,
+//       "percentSlower": 0
+//     },
+//     {
+//       "name": "alternativeImplementation",
+//       "ops": 800000,
+//       "margin": 1.8,
+//       "percentSlower": 20
+//     }
+//   ]
+// }
+// \`\`\`
+// 2. Make sure to provide proper JSON that can be parsed
+// 3. Include both the original function and alternatives in the benchmark
+`;
+        // Create a new document with the instructions
+        // Insert instructions after initial function but before expected completion
+        const lastLine = document.lineCount - 1;
+        documentText = currentText.substring(0, document.offsetAt(new vscode.Position(lastLine, 0))) + 
+                      formatInstructions + 
+                      currentText.substring(document.offsetAt(new vscode.Position(lastLine, 0)));
+        
+        // Log the modified prompt
+        outputChannel.appendLine('Modified prompt with format instructions:');
+        outputChannel.appendLine(documentText.substring(0, 500) + '...');
+    }
 
-    // Instead of using the standard vscode commands, let's try to use Copilot's getCompletions directly
+    // Try to use Copilot's direct API if available
     try {
         if (copilot.exports && typeof copilot.exports.getCompletions === 'function') {
             outputChannel.appendLine('Using Copilot exports.getCompletions');
-            const completions = await copilot.exports.getCompletions(document, new vscode.Position(line, 0), {});
+            
+            // Create a temporary document with our instructions
+            const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
+            const tempDoc = await vscode.workspace.openTextDocument(tempUri);
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(tempUri, new vscode.Position(0, 0), documentText);
+            await vscode.workspace.applyEdit(edit);
+            
+            // Get completions from the temp document
+            const completions = await copilot.exports.getCompletions(tempDoc, new vscode.Position(tempDoc.lineCount - 1, 0), {});
+            
+            // Close the temp document
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+            
             if (completions && completions.length > 0) {
                 const completion = completions[0] || '';
                 outputChannel.appendLine(`Received completion from Copilot exports: ${completion.substring(0, 100)}...`);
@@ -205,22 +313,45 @@ async function getCopilotSuggestion(document: vscode.TextDocument, line: number)
     }
 
     // Standard method as fallback
-    await vscode.commands.executeCommand('editor.action.triggerSuggest');
-    await new Promise(resolve => setTimeout(resolve, 3000)); // Increased wait time
-    
-    const suggestions = await vscode.commands.executeCommand<vscode.CompletionList>(
-        'vscode.executeCompletionItemProvider',
-        document.uri,
-        new vscode.Position(line, 0),
-        undefined,
-        50
-    );
-
-    if (!suggestions?.items.length) {
-        throw new Error('No suggestions received from Copilot');
+    try {
+        // Create a temporary document with our instructions
+        const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
+        const tempDoc = await vscode.workspace.openTextDocument(tempUri);
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(tempUri, new vscode.Position(0, 0), documentText);
+        await vscode.workspace.applyEdit(edit);
+        
+        // Open the document and position at the end
+        const editor = await vscode.window.showTextDocument(tempDoc);
+        editor.selection = new vscode.Selection(
+            new vscode.Position(tempDoc.lineCount - 1, 0),
+            new vscode.Position(tempDoc.lineCount - 1, 0)
+        );
+        
+        // Trigger suggest and wait for completions
+        await vscode.commands.executeCommand('editor.action.triggerSuggest');
+        await new Promise(resolve => setTimeout(resolve, 3000)); // Increased wait time
+        
+        const suggestions = await vscode.commands.executeCommand<vscode.CompletionList>(
+            'vscode.executeCompletionItemProvider',
+            tempDoc.uri,
+            new vscode.Position(tempDoc.lineCount - 1, 0),
+            undefined,
+            50
+        );
+        
+        // Close the temp document
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        
+        if (!suggestions?.items.length) {
+            throw new Error('No suggestions received from Copilot');
+        }
+        
+        return suggestions.items[0].insertText?.toString() || '';
+    } catch (e: any) {
+        outputChannel.appendLine(`Error with standard method: ${e.message}`);
+        throw e;
     }
-
-    return suggestions.items[0].insertText?.toString() || '';
 }
 
 // HTML template functions
