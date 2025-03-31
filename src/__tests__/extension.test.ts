@@ -6,6 +6,15 @@ const nextTick = () => new Promise(resolve => setTimeout(resolve, 0));
 // Helper to wait a bit longer for DOM updates
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Add mock for clipboard API
+mockVscode.env = {
+  ...mockVscode.env,
+  clipboard: {
+    readText: jest.fn().mockResolvedValue(''),
+    writeText: jest.fn().mockResolvedValue(undefined)
+  }
+};
+
 describe('PerfCopilot Extension', () => {
     const context: any = {
         subscriptions: [],
