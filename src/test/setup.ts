@@ -29,11 +29,23 @@ const mockTextDocument = {
 const registeredCommands = new Map<string, (...args: any[]) => any>();
 
 // Create a results string that matches what the extension is looking for
-const mockResultsString = `Time Complexity: O(n)
+const mockResultsString = `
+Time Complexity: O(n)
 Space Complexity: O(1)
-Performance Analysis: This function has linear time complexity...
+ 
+Analysis:
+This function has linear time complexity because it iterates through each element once.
 
-Results: {"suggestions":["function optimized() { return 2; }"],"benchmarkResults":{"fastest":"optimized","results":[]}}`;
+Alternative Implementation:
+\`\`\`javascript
+function optimized() { return 2; }
+\`\`\`
+
+Benchmark Results:
+\`\`\`json
+{"fastest":"optimized","results":[{"name":"original","ops":1000,"margin":0.5},{"name":"optimized","ops":2000,"margin":0.5}]}
+\`\`\`
+`;
 
 // Helper function to simulate the complete analysis flow
 const simulateCompleteAnalysis = (withError = false) => {
@@ -166,7 +178,8 @@ const mockVscode = {
     },
     workspace: {
         openTextDocument: jest.fn().mockResolvedValue(mockTextDocument),
-        workspaceFolders: [{ uri: { fsPath: '/workspace' } }]
+        workspaceFolders: [{ uri: { fsPath: '/workspace' } }],
+        applyEdit: jest.fn().mockResolvedValue(true)
     },
     commands: {
         registerCommand: jest.fn((command: string, callback: (...args: any[]) => any) => {
@@ -194,6 +207,28 @@ const mockVscode = {
             return undefined;
         })
     },
+    WorkspaceEdit: jest.fn().mockImplementation(() => ({
+        insert: jest.fn(),
+        delete: jest.fn(),
+        replace: jest.fn(),
+        has: jest.fn().mockReturnValue(false)
+    })),
+    Position: jest.fn().mockImplementation((line, character) => ({
+        line,
+        character
+    })),
+    Range: jest.fn().mockImplementation((start, end) => ({
+        start,
+        end
+    })),
+    Selection: jest.fn().mockImplementation((anchor, active) => ({
+        anchor, 
+        active,
+        start: anchor,
+        end: active,
+        isEmpty: false,
+        isReversed: false
+    })),
     Uri: {
         file: jest.fn(path => ({ 
             fsPath: path,
@@ -201,7 +236,34 @@ const mockVscode = {
             path,
             authority: '',
             query: '',
-            fragment: ''
+            fragment: '',
+            toJSON: function() {
+                return {
+                    scheme: this.scheme,
+                    authority: this.authority,
+                    path: this.path,
+                    query: this.query,
+                    fragment: this.fragment
+                };
+            }
+        })),
+        parse: jest.fn(uri => ({
+            fsPath: '/test/path',
+            scheme: 'untitled',
+            path: '/test/path',
+            authority: '',
+            query: '',
+            fragment: '',
+            with: jest.fn().mockReturnThis(),
+            toJSON: function() {
+                return {
+                    scheme: this.scheme,
+                    authority: this.authority,
+                    path: this.path,
+                    query: this.query,
+                    fragment: this.fragment
+                };
+            }
         }))
     },
     extensions: {

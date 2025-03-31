@@ -1,103 +1,139 @@
 import * as vscode from 'vscode';
 import benny from 'benny';
 
-// Create an output channel for logging
-let outputChannel: vscode.OutputChannel;
-
 /**
  * Interface for benchmark results from Benny
  */
-interface CaseResultWithDiff {
+interface BenchmarkResult {
     name: string;
-    ops: number;  // Operations per second
+    ops: number;
     margin: number;
-    percentSlower: number;
-    samples: number;
+    percentSlower?: number;
 }
 
+interface BenchmarkResults {
+    fastest?: string;
+    results: BenchmarkResult[];
+    alternatives?: string[];
+}
+
+// The extension output channel
+const outputChannel = vscode.window.createOutputChannel('PerfCopilot');
+
 /**
- * Activates the extension
+ * @param {vscode.ExtensionContext} context
  */
 export function activate(context: vscode.ExtensionContext) {
-    outputChannel = vscode.window.createOutputChannel('PerfCopilot');
     outputChannel.appendLine('PerfCopilot extension activated');
     
-    let disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
+    // Register the command to analyze a function
+    const disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
         try {
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active editor found');
                 return;
             }
-
+            
+            // Get the selected text
             const selection = editor.selection;
-            if (selection.isEmpty) {
-                vscode.window.showErrorMessage('Please select a function to analyze');
+            const selectedText = editor.document.getText(selection);
+            
+            if (!selectedText) {
+                vscode.window.showErrorMessage('No function selected');
                 return;
             }
-
-            const originalFunction = editor.document.getText(selection);
-            outputChannel.appendLine(`Analyzing function: ${originalFunction.substring(0, 100)}...`);
-
-            // Create a WebView panel
+            
+            outputChannel.appendLine(`Analyzing function: ${selectedText.substring(0, 100)}...`);
+            
+            // Create webview panel
             const panel = vscode.window.createWebviewPanel(
-                'functionAnalysis',
-                'Function Performance Analysis',
+                'perfcopilot',
+                'Function Analysis',
                 vscode.ViewColumn.Two,
-                { enableScripts: true }
+                {
+                    enableScripts: true,
+                    retainContextWhenHidden: true
+                }
             );
-
-            // Show loading indicator
+            
+            // Set initial HTML
             panel.webview.html = getLoadingContent();
             
-            // Create a temporary document for Copilot to analyze
-            const tempDoc = await vscode.workspace.openTextDocument({
-                content: `
-// Original Function:
+            // Store original function for later comparison
+            const originalFunction = selectedText;
+            
+            // Prepare a document with setup for Copilot analysis
+            // Create a template that will be completed by Copilot
+            const template = `
+// Function to analyze:
 ${originalFunction}
 
-// TASK: Analyze this function's performance and generate optimized alternatives.
-//
-// Please include:
-// 1. Time complexity analysis (Big O)
-// 2. Space complexity analysis (Big O)
-// 3. Performance characteristics explanation
-// 4. At least 1-2 optimized alternative implementations
-// 5. Benchmark comparison between original and alternatives
-//
-// FORMAT YOUR RESPONSE LIKE THIS:
 /*
-Time Complexity: O(?)
-Space Complexity: O(?)
-Performance Analysis: detailed explanation...
+Please provide a comprehensive performance analysis of the function above, including:
+1. Time and space complexity analysis
+2. Explanation of algorithmic approach and possible bottlenecks
+3. Compare performance using Benny or other benchmarking method
+4. Return a complete analysis with time/space complexity and benchmark results
 
-Alternative Implementations:
-\`\`\`javascript
-function alternativeOne() {
-  // Your optimized code here
-}
+Format the output as follows:
+===========================
+# Performance Analysis
 
-function alternativeTwo() {
-  // Your second implementation here
-}
-\`\`\`
+## Time Complexity
+[Explanation of the time complexity]
 
-Benchmark Results:
+## Space Complexity
+[Explanation of the space complexity]
+
+## Algorithm Analysis
+[Detailed explanation of how the algorithm works and potential bottlenecks]
+
+## Suggested Optimizations
+[Explain potential optimizations]
+
+## Alternative Implementations
+[Provide 1-3 alternative implementations with explanations]
+
+## Benchmark Results:
 \`\`\`json
 {
-  "fastest": "nameOfFastestFunction",
+  "fastest": "implementation name",
   "results": [
-    {"name": "original", "ops": 1000000, "margin": 0.5},
-    {"name": "alternativeOne", "ops": 1500000, "margin": 0.5}
+    {
+      "name": "original",
+      "ops": number of operations per second,
+      "margin": error margin,
+      "percentSlower": percent slower than fastest
+    },
+    {
+      "name": "alternative1",
+      "ops": number of operations per second,
+      "margin": error margin,
+      "percentSlower": percent slower than fastest
+    }
   ]
 }
 \`\`\`
+===========================
 */
-
-// Let's analyze the code:
-
-`,
-                language: 'javascript'
+`;
+            
+            // Create a temporary document with the template
+            const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
+            const tempDoc = await vscode.workspace.openTextDocument(tempUri);
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(tempUri, new vscode.Position(0, 0), template);
+            await vscode.workspace.applyEdit(edit);
+            
+            await vscode.window.showTextDocument(tempDoc, {
+                preview: false,
+                viewColumn: vscode.ViewColumn.One,
+                preserveFocus: true,
+                selection: new vscode.Range(
+                    new vscode.Position(0, 0),
+                    new vscode.Position(0, 0)
+                )
             });
 
             // Get Copilot's complete analysis and implementation
@@ -109,47 +145,69 @@ Benchmark Results:
             
             // Extract benchmark results from the analysis
             try {
-                // Look for JSON inside the analysis - try multiple patterns
-                let jsonMatch = analysis.match(/```json\s*([\s\S]*?)\s*```/);
-                if (!jsonMatch) {
-                    jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?({[\s\S]*?})/);
-                }
-                if (!jsonMatch) {
-                    jsonMatch = analysis.match(/Results:\s*({[\s\S]*?})/);
-                }
-                if (!jsonMatch) {
-                    // Show the analysis anyway, without benchmark data
-                    outputChannel.appendLine('No benchmark results found in JSON format. Showing raw analysis.');
-                    panel.webview.html = getWebviewContentWithAnalysis({}, analysis);
-                    panel.reveal(vscode.ViewColumn.Two);
-                    return;
-                }
+                // Look for JSON inside the analysis - specifically in the Benchmark Results section
+                // Improved regex that's more flexible with whitespace and newlines
+                const jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?```(?:json)?([\s\S]*?)```/);
+                let benchmarkResults: BenchmarkResults = { results: [] };
                 
-                const jsonText = jsonMatch[1].trim();
-                const results = JSON.parse(jsonText);
+                if (jsonMatch && jsonMatch[1]) {
+                    try {
+                        // Clean up the extracted JSON text
+                        let jsonText = jsonMatch[1].trim();
+                        
+                        // Remove any extra backticks or comments that might be in the JSON
+                        jsonText = jsonText.replace(/^```.*$/gm, '').trim();
+                        
+                        outputChannel.appendLine('Extracted benchmark JSON:');
+                        outputChannel.appendLine(jsonText);
+                        
+                        // Try to parse the JSON
+                        benchmarkResults = JSON.parse(jsonText);
+                        outputChannel.appendLine('Successfully parsed benchmark data');
+                        
+                        // Validate the benchmark results structure
+                        if (!benchmarkResults.hasOwnProperty('results')) {
+                            outputChannel.appendLine('Warning: Benchmark results missing "results" array');
+                            benchmarkResults = { 
+                                ...benchmarkResults,
+                                results: []
+                            };
+                        }
+                    } catch (jsonError: any) {
+                        outputChannel.appendLine(`Error parsing benchmark JSON: ${jsonError.message}`);
+                        // Continue with the analysis even if benchmark parsing fails
+                    }
+                } else {
+                    outputChannel.appendLine('Warning: No benchmark results section found in the analysis');
+                }
                 
                 // Extract alternative implementations
                 const implementations: string[] = [];
-                const codeBlocks = analysis.match(/```(?:javascript|js)?\s*([\s\S]*?)\s*```/g);
+                const codeBlockRegex = /```(?:javascript|js)?([\s\S]*?)```/g;
+                let match;
                 
-                if (codeBlocks) {
-                    for (const block of codeBlocks) {
-                        const codeContent = block.replace(/```(?:javascript|js)?\s*/, '').replace(/\s*```$/, '');
-                        if (codeContent.includes('function ') && !codeContent.includes(originalFunction.substring(0, 30))) {
-                            implementations.push(codeContent.trim());
-                        }
+                while ((match = codeBlockRegex.exec(analysis)) !== null) {
+                    const codeContent = match[1].trim();
+                    if (codeContent.includes('function ') && !codeContent.includes(originalFunction.substring(0, 30))) {
+                        implementations.push(codeContent);
                     }
                 }
                 
-                // Add implementations to results if not already there
-                if (!results.suggestions && implementations.length > 0) {
-                    results.suggestions = implementations;
+                if (implementations.length > 0) {
+                    outputChannel.appendLine(`Found ${implementations.length} alternative implementations`);
                 }
                 
+                // Create results object
+                const results: BenchmarkResults = {
+                    ...(benchmarkResults as any),
+                    alternatives: implementations
+                };
+                
+                // Display the analysis with the results
                 panel.webview.html = getWebviewContentWithAnalysis(results, analysis);
             } catch (error: any) {
                 outputChannel.appendLine(`Error processing analysis: ${error.message}`);
-                panel.webview.html = getWebviewContentWithAnalysis({}, analysis);
+                panel.webview.html = getWebviewContentWithAnalysis({ results: [] }, analysis);
             }
             
             panel.reveal(vscode.ViewColumn.Two);
@@ -171,7 +229,7 @@ Benchmark Results:
 /**
  * Gets a code suggestion from GitHub Copilot
  */
-async function getCopilotSuggestion(document: vscode.TextDocument, line: number): Promise<string> {
+async function getCopilotSuggestion(document: vscode.TextDocument, _line: number): Promise<string> {
     const copilot = vscode.extensions.getExtension('GitHub.copilot');
     if (!copilot) {
         throw new Error('GitHub Copilot extension is not installed');
@@ -181,33 +239,212 @@ async function getCopilotSuggestion(document: vscode.TextDocument, line: number)
         await copilot.activate();
     }
 
-    // Give more explicit instructions in the cursor position
-    await vscode.window.showTextDocument(document);
-    const editor = vscode.window.activeTextEditor;
-    if (editor) {
-        editor.selection = new vscode.Selection(
-            new vscode.Position(line, 0),
-            new vscode.Position(line, 0)
-        );
-    }
-
-    // Trigger Copilot suggestion and wait for it
-    await vscode.commands.executeCommand('editor.action.triggerSuggest');
-    await new Promise(resolve => setTimeout(resolve, 3000)); // Increased wait time
+    // For benchmark results, we need to ensure the document contains clear instructions
+    // for Copilot to format the results in a consistent way
+    const currentText = document.getText();
+    let documentText = currentText;
     
-    const suggestions = await vscode.commands.executeCommand<vscode.CompletionList>(
-        'vscode.executeCompletionItemProvider',
-        document.uri,
-        new vscode.Position(line, 0),
-        undefined,
-        50
-    );
-
-    if (!suggestions?.items.length) {
-        throw new Error('No suggestions received from Copilot');
+    // Add explicit instructions for benchmark results format if not already present
+    if (!currentText.includes("FORMAT INSTRUCTIONS FOR BENCHMARK RESULTS")) {
+        const formatInstructions = `
+// FORMAT INSTRUCTIONS FOR BENCHMARK RESULTS:
+// 1. Always include a 'Benchmark Results:' section with valid JSON in the following format:
+// \`\`\`json
+// {
+//   "fastest": "functionName",
+//   "results": [
+//     {
+//       "name": "functionName",
+//       "ops": 1000000,
+//       "margin": 1.5,
+//       "percentSlower": 0
+//     },
+//     {
+//       "name": "alternativeImplementation",
+//       "ops": 800000,
+//       "margin": 1.8,
+//       "percentSlower": 20
+//     }
+//   ]
+// }
+// \`\`\`
+// 2. Make sure to provide proper JSON that can be parsed
+// 3. Include both the original function and alternatives in the benchmark
+`;
+        // Create a new document with the instructions
+        // Insert instructions after initial function but before expected completion
+        const lastLine = document.lineCount - 1;
+        documentText = currentText.substring(0, document.offsetAt(new vscode.Position(lastLine, 0))) + 
+                      formatInstructions + 
+                      currentText.substring(document.offsetAt(new vscode.Position(lastLine, 0)));
+        
+        // Log the modified prompt
+        outputChannel.appendLine('Modified prompt with format instructions:');
+        outputChannel.appendLine(documentText.substring(0, 500) + '...');
     }
 
-    return suggestions.items[0].insertText?.toString() || '';
+    // Try direct Copilot exports method first
+    outputChannel.appendLine('Attempting to use Copilot exports method...');
+    try {
+        if (copilot.exports && typeof copilot.exports.getCompletions === 'function') {
+            outputChannel.appendLine('Using Copilot exports.getCompletions');
+            
+            // Don't create a temporary document for this method
+            const completions = await copilot.exports.getCompletions(document, new vscode.Position(document.lineCount - 1, 0), {});
+            
+            if (completions && completions.length > 0) {
+                const completion = completions[0] || '';
+                outputChannel.appendLine(`Received completion from Copilot exports: ${completion.substring(0, 100)}...`);
+                return completion;
+            } else {
+                outputChannel.appendLine('No completions returned from Copilot exports');
+            }
+        } else {
+            outputChannel.appendLine('Copilot exports.getCompletions not available');
+        }
+    } catch (e: any) {
+        outputChannel.appendLine(`Error using Copilot exports: ${e.message}`);
+    }
+    
+    // Fall back to standard method with timeout protection
+    outputChannel.appendLine('Falling back to standard method');
+    
+    let tempDoc: vscode.TextDocument | undefined;
+    let editor: vscode.TextEditor | undefined;
+    
+    try {
+        // Polyfill for AbortController if needed
+        function getAbortController() {
+            // If AbortController is available in the global scope, use it
+            if (typeof AbortController !== 'undefined') {
+                return new AbortController();
+            }
+            
+            // Simple polyfill for AbortController
+            const listeners: Array<() => void> = [];
+            const signal = {
+                aborted: false,
+                addEventListener: (type: string, listener: () => void) => {
+                    if (type === 'abort') {
+                        listeners.push(listener);
+                    }
+                },
+                removeEventListener: (type: string, listener: () => void) => {
+                    if (type === 'abort') {
+                        const index = listeners.indexOf(listener);
+                        if (index !== -1) {
+                            listeners.splice(index, 1);
+                        }
+                    }
+                }
+            };
+            
+            return {
+                signal,
+                abort: () => {
+                    // Mark as aborted and call listeners
+                    signal.aborted = true;
+                    listeners.forEach(listener => listener());
+                }
+            };
+        }
+
+        // Try to create an abort controller for timeout protection
+        let abortController;
+        try {
+            abortController = getAbortController();
+        } catch (e) {
+            outputChannel.appendLine(`Error creating AbortController: ${e}`);
+            // Continue without abort capabilities
+            abortController = {
+                signal: { aborted: false, addEventListener: () => {} },
+                abort: () => {}
+            };
+        }
+
+        const signal = abortController.signal;
+        const timeout = setTimeout(() => {
+            outputChannel.appendLine('Operation timed out, aborting');
+            abortController.abort();
+        }, 10000); // 10 second timeout
+        
+        // Create a temporary document with our instructions
+        const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
+        tempDoc = await vscode.workspace.openTextDocument(tempUri);
+        
+        // Apply the document edit
+        const edit = new vscode.WorkspaceEdit();
+        edit.insert(tempUri, new vscode.Position(0, 0), documentText);
+        await vscode.workspace.applyEdit(edit);
+        
+        // Show the document
+        editor = await vscode.window.showTextDocument(tempDoc, {
+            preview: true,
+            viewColumn: vscode.ViewColumn.Beside
+        });
+        
+        // Position cursor at the end
+        if (editor) {
+            editor.selection = new vscode.Selection(
+                new vscode.Position(tempDoc.lineCount - 1, 0),
+                new vscode.Position(tempDoc.lineCount - 1, 0)
+            );
+        }
+        
+        // Trigger the suggestion
+        outputChannel.appendLine('Triggering Copilot suggestion');
+        await vscode.commands.executeCommand('editor.action.triggerSuggest');
+        
+        // Wait for suggestions
+        outputChannel.appendLine('Waiting for suggestions...');
+        await new Promise((resolve, reject) => {
+            const waitTime = setTimeout(() => {
+                resolve(undefined);
+            }, 5000);
+            
+            if (signal.aborted) {
+                clearTimeout(waitTime);
+                reject(new Error('Operation aborted'));
+            }
+            
+            signal.addEventListener('abort', () => {
+                clearTimeout(waitTime);
+                reject(new Error('Operation aborted'));
+            });
+        });
+        
+        // Get completions
+        const suggestions = await vscode.commands.executeCommand<vscode.CompletionList>(
+            'vscode.executeCompletionItemProvider',
+            tempDoc.uri,
+            new vscode.Position(tempDoc.lineCount - 1, 0),
+            undefined,
+            50
+        );
+        
+        // Clear the timeout
+        clearTimeout(timeout);
+        
+        // Process results
+        if (!suggestions?.items.length) {
+            outputChannel.appendLine('No suggestions received from Copilot');
+            throw new Error('No suggestions received from Copilot');
+        }
+        
+        const result = suggestions.items[0].insertText?.toString() || '';
+        outputChannel.appendLine(`Received suggestion: ${result.substring(0, 100)}...`);
+        
+        return result;
+    } catch (e: any) {
+        outputChannel.appendLine(`Error with standard method: ${e.message}`);
+        throw new Error(`Error getting Copilot suggestion: ${e.message}`);
+    } finally {
+        // Always ensure we clean up
+        if (editor) {
+            outputChannel.appendLine('Closing temporary document editor');
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
+    }
 }
 
 // HTML template functions
@@ -291,6 +528,8 @@ function getWebviewContentWithAnalysis(results: any, analysis: string): string {
                 border-radius: 5px;
                 margin-bottom: 20px;
                 white-space: pre-wrap;
+                font-family: monospace;
+                font-size: 14px;
             }
             .code-block {
                 background-color: #1e1e1e;
@@ -328,6 +567,12 @@ function getWebviewContentWithAnalysis(results: any, analysis: string): string {
                 font-weight: bold;
                 color: #28a745;
             }
+            /* Syntax highlighting */
+            .analysis .keyword { color: #569CD6; }
+            .analysis .function { color: #DCDCAA; }
+            .analysis .string { color: #CE9178; }
+            .analysis .number { color: #B5CEA8; }
+            .analysis .comment { color: #6A9955; }
         </style>
     </head>
     <body>
@@ -350,18 +595,23 @@ ${escapeHtml(analysis)}
                         <th>Function</th>
                         <th>Operations/sec</th>
                         <th>Margin</th>
-                        <th>% Difference</th>
+                        <th>Relative</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${results.results.map((result: any) => `
-                    <tr class="${result.name === results.fastest ? 'fastest' : ''}">
+                    ${results.results.map((result: any) => {
+                        const isFastest = result.name === results.fastest;
+                        const relative = isFastest ? '100%' : 
+                                      result.percentSlower ? `${100 - result.percentSlower}%` : 
+                                      'N/A';
+                        return `
+                    <tr class="${isFastest ? 'fastest' : ''}">
                         <td>${escapeHtml(result.name)}</td>
-                        <td>${result.ops.toLocaleString()}</td>
+                        <td>${Number(result.ops).toLocaleString()}</td>
                         <td>±${result.margin}%</td>
-                        <td>${result.percentSlower ? result.percentSlower + '%' : 'baseline'}</td>
-                    </tr>
-                    `).join('')}
+                        <td>${relative}</td>
+                    </tr>`;
+                    }).join('')}
                 </tbody>
             </table>
         </div>

@@ -1,13 +1,15 @@
-name: Auto Tag on PR
+name: Auto Tag on PR Merge
 
 on:
   pull_request:
-    types: [opened]
+    types: [closed]
     branches:
       - main
 
 jobs:
   create-tag:
+    # Only run if the PR was merged (not just closed)
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,13 +28,27 @@ jobs:
           # Get the current version from package.json
           VERSION=${{ steps.package-version.outputs.current-version }}
           
+          # Check if this tag already exists
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists. Creating a new minor version."
+            # Split the version into parts
+            IFS='.' read -r -a version_parts <<< "$VERSION"
+            MINOR=$((version_parts[1] + 1))
+            VERSION="${version_parts[0]}.${MINOR}.0"
+          fi
+
+          echo "Creating tag v${VERSION}"
+          
           # Create and push the tag
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git tag -a "v${VERSION}" -m "Release version ${VERSION}"
           git push origin "v${VERSION}"
+          
+          # Set output for use in later steps
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
-      - name: Add tag link to PR
+      - name: Add tag comment to PR
         uses: actions/github-script@v6
         with:
           script: |
@@ -44,5 +60,5 @@ jobs:
               owner: repo.owner,
               repo: repo.repo,
               issue_number: prNumber,
-              body: `🏷️ Created tag v${version} for this PR`
+              body: `✅ PR was merged and tag v${version} was created!`
             }) 
