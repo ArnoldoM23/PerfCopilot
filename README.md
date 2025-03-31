@@ -146,7 +146,30 @@ function findFirstNonRepeating(str) {
 
 ## Troubleshooting
 
-### Error: "Unexpected token 'const'"
+### Viewing Logs
+
+To view detailed logs when encountering issues:
+
+1. Open the Command Palette:
+   - Mac: Press `Cmd+Shift+P`
+   - Windows/Linux: Press `Ctrl+Shift+P`
+2. Type "PerfCopilot: Show Logs"
+3. Press Enter or click on the command
+
+The Output panel will open showing detailed logs from PerfCopilot, which is helpful for troubleshooting issues.
+
+### Common Errors
+
+#### Error: "Could not extract function body from Copilot suggestion"
+
+This error occurs when GitHub Copilot's suggestion couldn't be properly parsed. To resolve:
+
+1. Make sure GitHub Copilot is properly installed and authenticated
+2. Try running the analysis again
+3. If the error persists, check the logs (using steps above) for more details
+4. Try with a simpler function or wait a few seconds before running the analysis
+
+#### Error: "Unexpected token 'const'"
 
 This error occurs when your function contains modern JavaScript syntax that can't be evaluated.
 
@@ -161,13 +184,6 @@ This error occurs when your function contains modern JavaScript syntax that can'
 1. Make sure your function is self-contained (doesn't rely on external variables)
 2. Add test arguments inside the function if it requires specific inputs
 3. Simplify complex functions for testing
-
-### View Detailed Logs
-
-If you encounter any issues:
-1. Open the Command Palette (Ctrl+Shift+P)
-2. Type and select "PerfCopilot: Show Logs"
-3. Review the detailed logs to understand what went wrong
 
 ## License
 

@@ -72,11 +72,11 @@
     "@typescript-eslint/parser": "^6.13.1",
     "eslint": "^8.54.0",
     "typescript": "^5.3.2",
-    "@types/benchmark": "^2.1.5"
+    "@types/benchmark": "^2.1.5",
+    "@vscode/vsce": "^2.24.0"
   },
   "dependencies": {
-    "benny": "^3.7.1",
-    "@github/copilot-node": "^1.0.0"
+    "benny": "^3.7.1"
   },
   "extensionDependencies": [
     "GitHub.copilot"
