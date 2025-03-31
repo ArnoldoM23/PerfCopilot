@@ -53,49 +53,49 @@ export function activate(context: vscode.ExtensionContext) {
             // Create a temporary document for Copilot to analyze
             const tempDoc = await vscode.workspace.openTextDocument({
                 content: `
-// Original Function:
-${originalFunction}
+/* 
+ * PERFORMANCE ANALYSIS TASK
+ * ------------------------
+ * 1. Analyze this JavaScript function
+ * 2. Generate 1-2 alternative implementations 
+ * 3. Compare performance using Benny or other benchmarking method
+ * 4. Return a complete analysis with time/space complexity and benchmark results
+ * 
+ * FUNCTION TO ANALYZE:
+ * ${originalFunction}
+ *
+ * IMPORTANT: Do not try to execute this code. Instead, analyze it theoretically and
+ * provide improvements based on algorithmic understanding.
+ * 
+ * FORMAT YOUR RESPONSE AS FOLLOWS:
+ * 
+ * Time Complexity: O(?)
+ * Space Complexity: O(?)
+ * 
+ * Analysis:
+ * (Your detailed analysis here)
+ * 
+ * Alternative Implementation:
+ * \`\`\`javascript
+ * // Your improved implementation
+ * function improvedVersion() {
+ *   // Code here
+ * }
+ * \`\`\`
+ * 
+ * Benchmark Results:
+ * \`\`\`json
+ * {
+ *   "fastest": "improvedVersion",
+ *   "results": [
+ *     {"name": "original", "ops": 1000000, "margin": 0.5},
+ *     {"name": "improvedVersion", "ops": 1500000, "margin": 0.5}
+ *   ]
+ * }
+ * \`\`\`
+ */
 
-// TASK: Analyze this function's performance and generate optimized alternatives.
-//
-// Please include:
-// 1. Time complexity analysis (Big O)
-// 2. Space complexity analysis (Big O)
-// 3. Performance characteristics explanation
-// 4. At least 1-2 optimized alternative implementations
-// 5. Benchmark comparison between original and alternatives
-//
-// FORMAT YOUR RESPONSE LIKE THIS:
-/*
-Time Complexity: O(?)
-Space Complexity: O(?)
-Performance Analysis: detailed explanation...
-
-Alternative Implementations:
-\`\`\`javascript
-function alternativeOne() {
-  // Your optimized code here
-}
-
-function alternativeTwo() {
-  // Your second implementation here
-}
-\`\`\`
-
-Benchmark Results:
-\`\`\`json
-{
-  "fastest": "nameOfFastestFunction",
-  "results": [
-    {"name": "original", "ops": 1000000, "margin": 0.5},
-    {"name": "alternativeOne", "ops": 1500000, "margin": 0.5}
-  ]
-}
-\`\`\`
-*/
-
-// Let's analyze the code:
-
+// Begin analysis:
 `,
                 language: 'javascript'
             });
@@ -109,43 +109,46 @@ Benchmark Results:
             
             // Extract benchmark results from the analysis
             try {
-                // Look for JSON inside the analysis - try multiple patterns
-                let jsonMatch = analysis.match(/```json\s*([\s\S]*?)\s*```/);
-                if (!jsonMatch) {
-                    jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?({[\s\S]*?})/);
-                }
-                if (!jsonMatch) {
-                    jsonMatch = analysis.match(/Results:\s*({[\s\S]*?})/);
-                }
-                if (!jsonMatch) {
-                    // Show the analysis anyway, without benchmark data
-                    outputChannel.appendLine('No benchmark results found in JSON format. Showing raw analysis.');
-                    panel.webview.html = getWebviewContentWithAnalysis({}, analysis);
-                    panel.reveal(vscode.ViewColumn.Two);
-                    return;
-                }
+                // Look for JSON inside the analysis - specifically in the Benchmark Results section
+                const jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?```json[\s\S]*?([\s\S]*?)[\s\S]*?```/);
+                let benchmarkResults = {};
                 
-                const jsonText = jsonMatch[1].trim();
-                const results = JSON.parse(jsonText);
-                
-                // Extract alternative implementations
-                const implementations: string[] = [];
-                const codeBlocks = analysis.match(/```(?:javascript|js)?\s*([\s\S]*?)\s*```/g);
-                
-                if (codeBlocks) {
-                    for (const block of codeBlocks) {
-                        const codeContent = block.replace(/```(?:javascript|js)?\s*/, '').replace(/\s*```$/, '');
-                        if (codeContent.includes('function ') && !codeContent.includes(originalFunction.substring(0, 30))) {
-                            implementations.push(codeContent.trim());
-                        }
+                if (jsonMatch && jsonMatch[1]) {
+                    try {
+                        const jsonText = jsonMatch[1].trim();
+                        outputChannel.appendLine('Extracted benchmark JSON:');
+                        outputChannel.appendLine(jsonText);
+                        benchmarkResults = JSON.parse(jsonText);
+                        outputChannel.appendLine('Successfully parsed benchmark data');
+                    } catch (jsonError: any) {
+                        outputChannel.appendLine(`Error parsing benchmark JSON: ${jsonError.message}`);
+                        // Continue with the analysis even if benchmark parsing fails
                     }
                 }
                 
-                // Add implementations to results if not already there
-                if (!results.suggestions && implementations.length > 0) {
-                    results.suggestions = implementations;
+                // Extract alternative implementations
+                const implementations: string[] = [];
+                const codeBlockRegex = /```(?:javascript|js)?([\s\S]*?)```/g;
+                let match;
+                
+                while ((match = codeBlockRegex.exec(analysis)) !== null) {
+                    const codeContent = match[1].trim();
+                    if (codeContent.includes('function ') && !codeContent.includes(originalFunction.substring(0, 30))) {
+                        implementations.push(codeContent);
+                    }
                 }
                 
+                if (implementations.length > 0) {
+                    outputChannel.appendLine(`Found ${implementations.length} alternative implementations`);
+                }
+                
+                // Create results object
+                const results = {
+                    ...(benchmarkResults as any),
+                    alternatives: implementations
+                };
+                
+                // Display the analysis with the results
                 panel.webview.html = getWebviewContentWithAnalysis(results, analysis);
             } catch (error: any) {
                 outputChannel.appendLine(`Error processing analysis: ${error.message}`);
@@ -181,17 +184,27 @@ async function getCopilotSuggestion(document: vscode.TextDocument, line: number)
         await copilot.activate();
     }
 
-    // Give more explicit instructions in the cursor position
-    await vscode.window.showTextDocument(document);
-    const editor = vscode.window.activeTextEditor;
-    if (editor) {
-        editor.selection = new vscode.Selection(
-            new vscode.Position(line, 0),
-            new vscode.Position(line, 0)
-        );
+    // Get the full document text instead of just triggering at the cursor position
+    const fullPrompt = document.getText();
+    outputChannel.appendLine(`Sending prompt to Copilot: ${fullPrompt.substring(0, 500)}...`);
+
+    // Instead of using the standard vscode commands, let's try to use Copilot's getCompletions directly
+    try {
+        if (copilot.exports && typeof copilot.exports.getCompletions === 'function') {
+            outputChannel.appendLine('Using Copilot exports.getCompletions');
+            const completions = await copilot.exports.getCompletions(document, new vscode.Position(line, 0), {});
+            if (completions && completions.length > 0) {
+                const completion = completions[0] || '';
+                outputChannel.appendLine(`Received completion from Copilot exports: ${completion.substring(0, 100)}...`);
+                return completion;
+            }
+        }
+    } catch (e: any) {
+        outputChannel.appendLine(`Error using Copilot exports: ${e.message}`);
+        // Fall back to the standard method
     }
 
-    // Trigger Copilot suggestion and wait for it
+    // Standard method as fallback
     await vscode.commands.executeCommand('editor.action.triggerSuggest');
     await new Promise(resolve => setTimeout(resolve, 3000)); // Increased wait time
     
@@ -291,6 +304,8 @@ function getWebviewContentWithAnalysis(results: any, analysis: string): string {
                 border-radius: 5px;
                 margin-bottom: 20px;
                 white-space: pre-wrap;
+                font-family: monospace;
+                font-size: 14px;
             }
             .code-block {
                 background-color: #1e1e1e;
@@ -328,6 +343,12 @@ function getWebviewContentWithAnalysis(results: any, analysis: string): string {
                 font-weight: bold;
                 color: #28a745;
             }
+            /* Syntax highlighting */
+            .analysis .keyword { color: #569CD6; }
+            .analysis .function { color: #DCDCAA; }
+            .analysis .string { color: #CE9178; }
+            .analysis .number { color: #B5CEA8; }
+            .analysis .comment { color: #6A9955; }
         </style>
     </head>
     <body>
@@ -350,18 +371,23 @@ ${escapeHtml(analysis)}
                         <th>Function</th>
                         <th>Operations/sec</th>
                         <th>Margin</th>
-                        <th>% Difference</th>
+                        <th>Relative</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${results.results.map((result: any) => `
-                    <tr class="${result.name === results.fastest ? 'fastest' : ''}">
+                    ${results.results.map((result: any) => {
+                        const isFastest = result.name === results.fastest;
+                        const relative = isFastest ? '100%' : 
+                                      result.percentSlower ? `${100 - result.percentSlower}%` : 
+                                      'N/A';
+                        return `
+                    <tr class="${isFastest ? 'fastest' : ''}">
                         <td>${escapeHtml(result.name)}</td>
-                        <td>${result.ops.toLocaleString()}</td>
+                        <td>${Number(result.ops).toLocaleString()}</td>
                         <td>±${result.margin}%</td>
-                        <td>${result.percentSlower ? result.percentSlower + '%' : 'baseline'}</td>
-                    </tr>
-                    `).join('')}
+                        <td>${relative}</td>
+                    </tr>`;
+                    }).join('')}
                 </tbody>
             </table>
         </div>

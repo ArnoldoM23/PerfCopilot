@@ -29,11 +29,23 @@ const mockTextDocument = {
 const registeredCommands = new Map<string, (...args: any[]) => any>();
 
 // Create a results string that matches what the extension is looking for
-const mockResultsString = `Time Complexity: O(n)
+const mockResultsString = `
+Time Complexity: O(n)
 Space Complexity: O(1)
-Performance Analysis: This function has linear time complexity...
+ 
+Analysis:
+This function has linear time complexity because it iterates through each element once.
 
-Results: {"suggestions":["function optimized() { return 2; }"],"benchmarkResults":{"fastest":"optimized","results":[]}}`;
+Alternative Implementation:
+\`\`\`javascript
+function optimized() { return 2; }
+\`\`\`
+
+Benchmark Results:
+\`\`\`json
+{"fastest":"optimized","results":[{"name":"original","ops":1000,"margin":0.5},{"name":"optimized","ops":2000,"margin":0.5}]}
+\`\`\`
+`;
 
 // Helper function to simulate the complete analysis flow
 const simulateCompleteAnalysis = (withError = false) => {
