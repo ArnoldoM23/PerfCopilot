@@ -16,13 +16,6 @@ export function activate(context: vscode.ExtensionContext) {
     // Register the command to analyze a function
     const disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
         try {
-            // First check if Copilot is available
-            const isCopilotAvailable = await checkCopilotOrChatAvailable();
-            if (!isCopilotAvailable) {
-                vscode.window.showErrorMessage('GitHub Copilot or Copilot Chat is required but not detected. Please install from the marketplace and sign in.');
-                return;
-            }
-            
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active editor found');
@@ -38,59 +31,41 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
             
-            outputChannel.appendLine(`Analyzing function: ${selectedText.substring(0, 100)}...`);
+            // Copy the selected function to clipboard
+            await vscode.env.clipboard.writeText(selectedText);
+            outputChannel.appendLine('Copied function to clipboard');
             
-            // Create a webview panel to display results
-            const panel = vscode.window.createWebviewPanel(
-                'perfCopilot',
-                'Function Analysis',
-                vscode.ViewColumn.Two,
-                {
-                    enableScripts: true,
-                    retainContextWhenHidden: true
-                }
+            // Instructions for the user
+            vscode.window.showInformationMessage(
+                'Function copied to clipboard. Please open Copilot Chat, paste the function, and ask for alternatives and benchmarking.'
             );
             
-            // Set loading state
-            panel.webview.html = getLoadingHtml();
-            
+            // Try to focus Copilot Chat
             try {
-                // Get function alternatives from Copilot Chat
-                const alternatives = await getFunctionAlternativesFromChat(selectedText);
-                if (!alternatives) {
-                    panel.webview.html = getErrorHtml('Could not get alternatives from Copilot Chat. Please make sure GitHub Copilot Chat is installed and working.');
-                    return;
-                }
+                await vscode.commands.executeCommand('github.copilot.chat.focus');
+                outputChannel.appendLine('Opened Copilot Chat panel');
                 
-                outputChannel.appendLine(`Got alternatives: ${alternatives.length} bytes`);
+                // Wait a bit
+                await new Promise(resolve => setTimeout(resolve, 1000));
                 
-                // Extract the alternative functions
-                const extractedFunctions = extractFunctionsFromChatResponse(alternatives, selectedText);
+                // Try to paste the text
+                await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+                outputChannel.appendLine('Attempted to paste text into chat');
                 
-                if (!extractedFunctions || Object.keys(extractedFunctions).length < 2) {
-                    panel.webview.html = getErrorHtml('Could not extract alternative functions from Copilot Chat response.');
-                    return;
-                }
-                
-                // Create benchmark file and run it
-                const benchmarkResults = await createAndRunBenchmark(extractedFunctions);
-                
-                // Format the results nicely
-                const formattedResults = await formatBenchmarkResultsWithCopilot(extractedFunctions, benchmarkResults);
-                
-                // Display the results
-                panel.webview.html = getResultsHtml(formattedResults);
-                
-                // Bring the panel to focus
-                panel.reveal(vscode.ViewColumn.Two);
-                
-            } catch (error: any) {
-                outputChannel.appendLine(`Error during analysis: ${error.message}`);
-                panel.webview.html = getErrorHtml(`An error occurred: ${error.message}. Make sure GitHub Copilot is properly installed and signed in.`);
+                // Show additional instructions
+                vscode.window.showInformationMessage(
+                    'Now type: "can you create two alternative functions for this?" and press Enter. ' +
+                    'After getting the response, ask "can you now use benny to test the three functions."'
+                );
+            } catch (error) {
+                outputChannel.appendLine(`Error opening Copilot Chat: ${error}`);
+                vscode.window.showInformationMessage(
+                    'Could not automatically open Copilot Chat. Please open it manually, paste the function, ' +
+                    'and ask for alternatives and benchmarking.'
+                );
             }
-            
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Error analyzing function: ${error.message || error}`);
+        } catch (error) {
+            vscode.window.showErrorMessage(`Error: ${error}`);
         }
     });
 
@@ -102,237 +77,6 @@ export function activate(context: vscode.ExtensionContext) {
             outputChannel.show();
         })
     );
-}
-
-/**
- * Check if either Copilot or Copilot Chat is available
- */
-async function checkCopilotOrChatAvailable(): Promise<boolean> {
-    const copilot = vscode.extensions.getExtension('GitHub.copilot');
-    const copilotChat = vscode.extensions.getExtension('GitHub.copilot-chat');
-    
-    if (copilot || copilotChat) {
-        outputChannel.appendLine(`Copilot: ${copilot ? 'Found' : 'Not found'}, Copilot Chat: ${copilotChat ? 'Found' : 'Not found'}`);
-        return true;
-    }
-    
-    return false;
-}
-
-/**
- * Get function alternatives from Copilot Chat
- */
-async function getFunctionAlternativesFromChat(functionText: string): Promise<string> {
-    outputChannel.appendLine('Getting function alternatives from Copilot Chat...');
-    
-    try {
-        // Create a temporary markdown file to store the chat
-        const chatPrompt = `can you create two alternative functions for this?\n\n${functionText}`;
-        const chatFile = await createTempFile(chatPrompt, 'copilot-chat-functions.md');
-        
-        // Open the chat file
-        const document = await vscode.workspace.openTextDocument(chatFile);
-        await vscode.window.showTextDocument(document);
-        
-        // Send the question to Copilot Chat
-        await vscode.commands.executeCommand('github.copilot.chat.sendToChat');
-        
-        // Wait for response
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
-        // Get the response text
-        const response = document.getText();
-        
-        // Close the editor
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-        
-        // Return the response
-        return response;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error getting alternatives from chat: ${error.message}`);
-        throw new Error('Failed to get alternatives from Copilot Chat');
-    }
-}
-
-/**
- * Extract functions from Copilot Chat response
- */
-function extractFunctionsFromChatResponse(response: string, originalFunction: string): Record<string, string> {
-    outputChannel.appendLine('Extracting functions from chat response...');
-    
-    const result: Record<string, string> = {
-        'original': originalFunction
-    };
-    
-    // Extract function definitions using regex
-    const functionRegex = /function\s+(\w+)\s*\([^)]*\)\s*{[\s\S]*?}/g;
-    let match;
-    while ((match = functionRegex.exec(response)) !== null) {
-        const fullFunction = match[0];
-        // Extract function name using another regex
-        const nameMatch = /function\s+(\w+)/.exec(fullFunction);
-        if (nameMatch && nameMatch[1]) {
-            const functionName = nameMatch[1];
-            result[functionName] = fullFunction;
-        }
-    }
-    
-    outputChannel.appendLine(`Extracted ${Object.keys(result).length - 1} alternative functions`);
-    return result;
-}
-
-/**
- * Create and run a benchmark file for the functions
- */
-async function createAndRunBenchmark(functions: Record<string, string>): Promise<string> {
-    outputChannel.appendLine('Creating and running benchmark...');
-    
-    try {
-        // Create a benchmark file
-        const benchmarkFileContent = `
-// Generated benchmark file
-const b = require('benny');
-
-// Functions to benchmark
-${Object.values(functions).join('\n\n')}
-
-// Create a test array of random numbers
-const testArray = Array.from({ length: 100000 }, () => Math.random());
-
-// Run benchmarks
-module.exports = b.suite(
-  'Array Function Benchmark',
-
-  ${Object.keys(functions).map(name => `b.add('${name}', () => {
-    ${name}(testArray);
-  })`).join(',\n\n  ')},
-
-  b.cycle(),
-  b.complete(),
-  b.save({ file: 'benchmark-results', format: 'json' })
-);
-`;
-
-        const benchmarkFile = await createTempFile(benchmarkFileContent, 'benchmark.js');
-        
-        // Create a package.json if it doesn't exist in the temp directory
-        const packageJsonPath = path.join(path.dirname(benchmarkFile), 'package.json');
-        if (!fs.existsSync(packageJsonPath)) {
-            const packageJson = {
-                "name": "benchmark-temp",
-                "version": "1.0.0",
-                "description": "Temporary package for benchmarking",
-                "dependencies": {
-                    "benny": "^3.7.1"
-                }
-            };
-            fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
-        }
-        
-        // Install dependencies
-        const npmInstallResult = await runCommand('npm install benny', path.dirname(benchmarkFile));
-        outputChannel.appendLine(`npm install result: ${npmInstallResult}`);
-        
-        // Run the benchmark
-        const benchmarkResult = await runCommand(`node "${benchmarkFile}"`, path.dirname(benchmarkFile));
-        outputChannel.appendLine(`Benchmark result: ${benchmarkResult}`);
-        
-        // Read the JSON results if available
-        const resultsPath = path.join(path.dirname(benchmarkFile), 'benchmark-results.json');
-        if (fs.existsSync(resultsPath)) {
-            try {
-                const resultsJson = fs.readFileSync(resultsPath, 'utf8');
-                outputChannel.appendLine('Read benchmark results from JSON file');
-                return resultsJson;
-            } catch (err) {
-                outputChannel.appendLine(`Error reading results JSON: ${err}`);
-            }
-        }
-        
-        // Return the raw output if JSON file is not available
-        return benchmarkResult;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error in benchmark: ${error.message}`);
-        throw new Error(`Failed to run benchmark: ${error.message}`);
-    }
-}
-
-/**
- * Run a command asynchronously
- */
-async function runCommand(command: string, cwd: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        child_process.exec(command, { cwd }, (error, stdout, stderr) => {
-            if (error) {
-                outputChannel.appendLine(`Command error: ${error.message}`);
-                outputChannel.appendLine(`stderr: ${stderr}`);
-                reject(new Error(`Command failed: ${error.message}`));
-                return;
-            }
-            resolve(stdout);
-        });
-    });
-}
-
-/**
- * Format benchmark results with Copilot
- */
-async function formatBenchmarkResultsWithCopilot(functions: Record<string, string>, benchmarkResults: string): Promise<string> {
-    outputChannel.appendLine('Formatting benchmark results with Copilot...');
-    
-    try {
-        // Create a temporary file for Copilot to format the results
-        const formatPrompt = `
-# Benchmark Results
-
-Here are the functions that were benchmarked:
-
-${Object.entries(functions).map(([name, code]) => `## ${name}\n\`\`\`js\n${code}\n\`\`\``).join('\n\n')}
-
-## Raw Benchmark Results
-\`\`\`
-${benchmarkResults}
-\`\`\`
-
-Please format these benchmark results in a nice way, identifying the fastest function and explaining why it might be faster. Also suggest any other optimizations that could be made.
-`;
-
-        const formatFile = await createTempFile(formatPrompt, 'format-results.md');
-        
-        // Open the file
-        const document = await vscode.workspace.openTextDocument(formatFile);
-        await vscode.window.showTextDocument(document);
-        
-        // Send to Copilot Chat
-        await vscode.commands.executeCommand('github.copilot.chat.sendToChat');
-        
-        // Wait for response
-        await new Promise(resolve => setTimeout(resolve, 7000));
-        
-        // Get the response
-        const formattedResponse = document.getText();
-        
-        // Close the editor
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-        
-        // Extract the formatted part (after the prompt)
-        const splitPoint = formattedResponse.indexOf('# Benchmark Results');
-        const formatted = splitPoint >= 0
-            ? formattedResponse.substring(splitPoint)
-            : formattedResponse;
-        
-        return formatted;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error formatting results: ${error.message}`);
-        // Return a basic format if Copilot formatting fails
-        return `# Benchmark Results
-
-${benchmarkResults}
-
-## Functions
-${Object.entries(functions).map(([name, code]) => `### ${name}\n\`\`\`js\n${code}\n\`\`\``).join('\n\n')}
-`;
-    }
 }
 
 /**
