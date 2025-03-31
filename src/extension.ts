@@ -14,7 +14,6 @@ interface BenchmarkResult {
 interface BenchmarkResults {
     fastest?: string;
     results: BenchmarkResult[];
-    alternatives?: string[];
 }
 
 // The extension output channel
@@ -72,8 +71,8 @@ ${originalFunction}
 Please provide a comprehensive performance analysis of the function above, including:
 1. Time and space complexity analysis
 2. Explanation of algorithmic approach and possible bottlenecks
-3. Compare performance using Benny or other benchmarking method
-4. Return a complete analysis with time/space complexity and benchmark results
+3. Alternative implementations with different approaches
+4. Theoretical benchmark comparison showing relative performance
 
 Format the output as follows:
 ===========================
@@ -116,10 +115,7 @@ Format the output as follows:
 \`\`\`
 ===========================
 
-FORMAT INSTRUCTIONS FOR BENCHMARK RESULTS:
-1. Always include a 'Benchmark Results:' section with valid JSON in the following format shown above
-2. Make sure to provide proper JSON that can be parsed
-3. Include both the original function and alternatives in the benchmark
+Do NOT attempt to execute the code. Simply provide theoretical analysis based on algorithmic principles.
 */
 `;
 
@@ -144,73 +140,8 @@ FORMAT INSTRUCTIONS FOR BENCHMARK RESULTS:
                 outputChannel.appendLine('Raw Copilot Analysis:');
                 outputChannel.appendLine(analysis);
                 
-                // Extract benchmark results from the analysis
-                try {
-                    // Look for JSON inside the analysis - specifically in the Benchmark Results section
-                    // Improved regex that's more flexible with whitespace and newlines
-                    const jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?```(?:json)?([\s\S]*?)```/);
-                    let benchmarkResults: BenchmarkResults = { results: [] };
-                    
-                    if (jsonMatch && jsonMatch[1]) {
-                        try {
-                            // Clean up the extracted JSON text
-                            let jsonText = jsonMatch[1].trim();
-                            
-                            // Remove any extra backticks or comments that might be in the JSON
-                            jsonText = jsonText.replace(/^```.*$/gm, '').trim();
-                            
-                            outputChannel.appendLine('Extracted benchmark JSON:');
-                            outputChannel.appendLine(jsonText);
-                            
-                            // Try to parse the JSON
-                            benchmarkResults = JSON.parse(jsonText);
-                            outputChannel.appendLine('Successfully parsed benchmark data');
-                            
-                            // Validate the benchmark results structure
-                            if (!benchmarkResults.hasOwnProperty('results')) {
-                                outputChannel.appendLine('Warning: Benchmark results missing "results" array');
-                                benchmarkResults = { 
-                                    ...benchmarkResults,
-                                    results: []
-                                };
-                            }
-                        } catch (jsonError: any) {
-                            outputChannel.appendLine(`Error parsing benchmark JSON: ${jsonError.message}`);
-                            // Continue with the analysis even if benchmark parsing fails
-                        }
-                    } else {
-                        outputChannel.appendLine('Warning: No benchmark results section found in the analysis');
-                    }
-                    
-                    // Extract alternative implementations
-                    const implementations: string[] = [];
-                    const codeBlockRegex = /```(?:javascript|js)?([\s\S]*?)```/g;
-                    let match;
-                    
-                    while ((match = codeBlockRegex.exec(analysis)) !== null) {
-                        const codeContent = match[1].trim();
-                        if (codeContent.includes('function ') && !codeContent.includes(originalFunction.substring(0, 30))) {
-                            implementations.push(codeContent);
-                        }
-                    }
-                    
-                    if (implementations.length > 0) {
-                        outputChannel.appendLine(`Found ${implementations.length} alternative implementations`);
-                    }
-                    
-                    // Create results object
-                    const results: BenchmarkResults = {
-                        ...(benchmarkResults as any),
-                        alternatives: implementations
-                    };
-                    
-                    // Display the analysis with the results
-                    panel.webview.html = getWebviewContentWithAnalysis(results, analysis);
-                } catch (error: any) {
-                    outputChannel.appendLine(`Error processing analysis: ${error.message}`);
-                    panel.webview.html = getWebviewContentWithAnalysis({ results: [] }, analysis);
-                }
-                
+                // Display the analysis without any processing
+                panel.webview.html = getWebviewContentWithAnalysis(analysis);
                 panel.reveal(vscode.ViewColumn.Two);
             } catch (error: any) {
                 panel.webview.html = getErrorContent(
@@ -263,33 +194,35 @@ Analyze this JavaScript function and provide:
 2. Explanation of algorithm 
 3. Possible optimizations
 4. 1-2 alternative implementations
-5. Benchmarking results comparing the implementations
+5. Theoretical benchmark comparison (do NOT execute any code)
 
 The function:
 \`\`\`javascript
 ${originalFunction}
 \`\`\`
 
-Format your response with a section called "Benchmark Results:" that contains a JSON object with this exact structure:
+Include a "Benchmark Results:" section with a JSON object in this format:
 \`\`\`json
 {
   "fastest": "functionName",
   "results": [
     {
       "name": "original",
-      "ops": <number>,
-      "margin": <number>,
-      "percentSlower": <number>
+      "ops": <estimated number>,
+      "margin": <estimated number>,
+      "percentSlower": <estimated number>
     },
     {
       "name": "alternative1",
-      "ops": <number>,
-      "margin": <number>,
-      "percentSlower": <number>
+      "ops": <estimated number>,
+      "margin": <estimated number>,
+      "percentSlower": <estimated number>
     }
   ]
 }
 \`\`\`
+
+IMPORTANT: Do NOT actually execute the code! Only provide theoretical analysis.
 `;
             
             // Check if Copilot Chat API is available
@@ -439,7 +372,7 @@ function getErrorContent(error: string, originalFunction: string, analysis: stri
     </html>`;
 }
 
-function getWebviewContentWithAnalysis(results: any, analysis: string): string {
+function getWebviewContentWithAnalysis(analysis: string): string {
     // Enhanced HTML template with better styling and structure
     return `<!DOCTYPE html>
     <html lang="en">
@@ -479,39 +412,19 @@ function getWebviewContentWithAnalysis(results: any, analysis: string): string {
                 margin: 15px 0;
                 font-family: 'Courier New', monospace;
             }
-            .benchmark {
-                background-color: #f0f7ff;
-                padding: 15px;
-                border-radius: 5px;
-                margin-top: 20px;
-            }
-            .benchmark h2 {
-                margin-top: 0;
+            h1, h2, h3 {
                 color: #0366d6;
             }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 10px;
+            pre {
+                background-color: #f6f8fa;
+                border-radius: 3px;
+                padding: 16px;
+                overflow: auto;
             }
-            th, td {
-                padding: 10px;
-                border: 1px solid #ddd;
-                text-align: left;
+            code {
+                font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+                font-size: 85%;
             }
-            th {
-                background-color: #f1f1f1;
-            }
-            .fastest {
-                font-weight: bold;
-                color: #28a745;
-            }
-            /* Syntax highlighting */
-            .analysis .keyword { color: #569CD6; }
-            .analysis .function { color: #DCDCAA; }
-            .analysis .string { color: #CE9178; }
-            .analysis .number { color: #B5CEA8; }
-            .analysis .comment { color: #6A9955; }
         </style>
     </head>
     <body>
@@ -522,39 +435,6 @@ function getWebviewContentWithAnalysis(results: any, analysis: string): string {
         <div class="analysis">
 ${escapeHtml(analysis)}
         </div>
-        
-        ${results.results ? `
-        <div class="benchmark">
-            <h2>Benchmark Results</h2>
-            <p>Fastest implementation: <span class="fastest">${escapeHtml(results.fastest || 'Not specified')}</span></p>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th>Function</th>
-                        <th>Operations/sec</th>
-                        <th>Margin</th>
-                        <th>Relative</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${results.results.map((result: any) => {
-                        const isFastest = result.name === results.fastest;
-                        const relative = isFastest ? '100%' : 
-                                      result.percentSlower ? `${100 - result.percentSlower}%` : 
-                                      'N/A';
-                        return `
-                    <tr class="${isFastest ? 'fastest' : ''}">
-                        <td>${escapeHtml(result.name)}</td>
-                        <td>${Number(result.ops).toLocaleString()}</td>
-                        <td>±${result.margin}%</td>
-                        <td>${relative}</td>
-                    </tr>`;
-                    }).join('')}
-                </tbody>
-            </table>
-        </div>
-        ` : ''}
     </body>
     </html>`;
 }
