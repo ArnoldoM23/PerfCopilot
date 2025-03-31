@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import * as child_process from 'child_process';
 
 // The extension output channel
 const outputChannel = vscode.window.createOutputChannel('PerfCopilot');
@@ -54,56 +55,31 @@ export function activate(context: vscode.ExtensionContext) {
             panel.webview.html = getLoadingHtml();
             
             try {
-                // First try to open Chat directly
-                let analysis = await analyzeFunctionUsingChat(selectedText);
-                
-                // If chat didn't work, try inline suggestions
-                if (!analysis || analysis.length < 50) {
-                    outputChannel.appendLine('Chat failed or returned insufficient data, trying inline suggestions...');
-                    analysis = await analyzeFunctionUsingInlineSuggestions(selectedText);
-                }
-                
-                // If we still don't have an analysis, try with GitHub.dev approach
-                if (!analysis || analysis.length < 50) {
-                    outputChannel.appendLine('Inline suggestions failed, trying alternative method...');
-                    analysis = await analyzeFunctionWithAlternative(selectedText);
-                }
-                
-                // Final check if we got any usable analysis
-                if (!analysis || analysis.length < 50) {
-                    panel.webview.html = getErrorHtml('Could not get a good analysis from Copilot. Please make sure GitHub Copilot is properly installed, signed in, and working.');
+                // Get function alternatives from Copilot Chat
+                const alternatives = await getFunctionAlternativesFromChat(selectedText);
+                if (!alternatives) {
+                    panel.webview.html = getErrorHtml('Could not get alternatives from Copilot Chat. Please make sure GitHub Copilot Chat is installed and working.');
                     return;
                 }
                 
-                // Try to get benchmark results
-                let benchmarkResults = await getBenchmarkResults(selectedText);
+                outputChannel.appendLine(`Got alternatives: ${alternatives.length} bytes`);
                 
-                // If we couldn't get benchmark results, use a fallback
-                if (!benchmarkResults || benchmarkResults.length < 50) {
-                    benchmarkResults = `
-*Benchmark information could not be retrieved from Copilot. Here's a theoretical comparison:*
-
-In general, the optimized implementations should perform better with the following characteristics:
-- More efficient use of built-in methods and language features
-- Reduced time complexity for operations
-- Better memory usage patterns
-- Potentially taking advantage of caching or memoization
-
-For precise benchmark results, you can use Benny.js to compare the implementations manually.
-`;
+                // Extract the alternative functions
+                const extractedFunctions = extractFunctionsFromChatResponse(alternatives, selectedText);
+                
+                if (!extractedFunctions || Object.keys(extractedFunctions).length < 2) {
+                    panel.webview.html = getErrorHtml('Could not extract alternative functions from Copilot Chat response.');
+                    return;
                 }
                 
-                // Combine the analysis and benchmark results
-                const fullAnalysis = `# Function Performance Analysis
-
-${analysis}
-
-## Benchmark Results
-
-${benchmarkResults}`;
+                // Create benchmark file and run it
+                const benchmarkResults = await createAndRunBenchmark(extractedFunctions);
+                
+                // Format the results nicely
+                const formattedResults = await formatBenchmarkResultsWithCopilot(extractedFunctions, benchmarkResults);
                 
                 // Display the results
-                panel.webview.html = getResultsHtml(fullAnalysis);
+                panel.webview.html = getResultsHtml(formattedResults);
                 
                 // Bring the panel to focus
                 panel.reveal(vscode.ViewColumn.Two);
@@ -144,354 +120,218 @@ async function checkCopilotOrChatAvailable(): Promise<boolean> {
 }
 
 /**
- * Analyze a function using Copilot Chat directly
+ * Get function alternatives from Copilot Chat
  */
-async function analyzeFunctionUsingChat(functionText: string): Promise<string> {
-    outputChannel.appendLine('Attempting to use Copilot Chat for analysis...');
+async function getFunctionAlternativesFromChat(functionText: string): Promise<string> {
+    outputChannel.appendLine('Getting function alternatives from Copilot Chat...');
     
     try {
-        // Create the analysis prompt
-        const analysisPrompt = `
-I need you to analyze this JavaScript function and provide two alternative implementations that should be more efficient:
+        // Create a temporary markdown file to store the chat
+        const chatPrompt = `can you create two alternative functions for this?\n\n${functionText}`;
+        const chatFile = await createTempFile(chatPrompt, 'copilot-chat-functions.md');
+        
+        // Open the chat file
+        const document = await vscode.workspace.openTextDocument(chatFile);
+        await vscode.window.showTextDocument(document);
+        
+        // Send the question to Copilot Chat
+        await vscode.commands.executeCommand('github.copilot.chat.sendToChat');
+        
+        // Wait for response
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // Get the response text
+        const response = document.getText();
+        
+        // Close the editor
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        
+        // Return the response
+        return response;
+    } catch (error: any) {
+        outputChannel.appendLine(`Error getting alternatives from chat: ${error.message}`);
+        throw new Error('Failed to get alternatives from Copilot Chat');
+    }
+}
 
-\`\`\`javascript
-${functionText}
+/**
+ * Extract functions from Copilot Chat response
+ */
+function extractFunctionsFromChatResponse(response: string, originalFunction: string): Record<string, string> {
+    outputChannel.appendLine('Extracting functions from chat response...');
+    
+    const result: Record<string, string> = {
+        'original': originalFunction
+    };
+    
+    // Extract function definitions using regex
+    const functionRegex = /function\s+(\w+)\s*\([^)]*\)\s*{[\s\S]*?}/g;
+    let match;
+    while ((match = functionRegex.exec(response)) !== null) {
+        const fullFunction = match[0];
+        // Extract function name using another regex
+        const nameMatch = /function\s+(\w+)/.exec(fullFunction);
+        if (nameMatch && nameMatch[1]) {
+            const functionName = nameMatch[1];
+            result[functionName] = fullFunction;
+        }
+    }
+    
+    outputChannel.appendLine(`Extracted ${Object.keys(result).length - 1} alternative functions`);
+    return result;
+}
+
+/**
+ * Create and run a benchmark file for the functions
+ */
+async function createAndRunBenchmark(functions: Record<string, string>): Promise<string> {
+    outputChannel.appendLine('Creating and running benchmark...');
+    
+    try {
+        // Create a benchmark file
+        const benchmarkFileContent = `
+// Generated benchmark file
+const b = require('benny');
+
+// Functions to benchmark
+${Object.values(functions).join('\n\n')}
+
+// Create a test array of random numbers
+const testArray = Array.from({ length: 100000 }, () => Math.random());
+
+// Run benchmarks
+module.exports = b.suite(
+  'Array Function Benchmark',
+
+  ${Object.keys(functions).map(name => `b.add('${name}', () => {
+    ${name}(testArray);
+  })`).join(',\n\n  ')},
+
+  b.cycle(),
+  b.complete(),
+  b.save({ file: 'benchmark-results', format: 'json' })
+);
+`;
+
+        const benchmarkFile = await createTempFile(benchmarkFileContent, 'benchmark.js');
+        
+        // Create a package.json if it doesn't exist in the temp directory
+        const packageJsonPath = path.join(path.dirname(benchmarkFile), 'package.json');
+        if (!fs.existsSync(packageJsonPath)) {
+            const packageJson = {
+                "name": "benchmark-temp",
+                "version": "1.0.0",
+                "description": "Temporary package for benchmarking",
+                "dependencies": {
+                    "benny": "^3.7.1"
+                }
+            };
+            fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2));
+        }
+        
+        // Install dependencies
+        const npmInstallResult = await runCommand('npm install benny', path.dirname(benchmarkFile));
+        outputChannel.appendLine(`npm install result: ${npmInstallResult}`);
+        
+        // Run the benchmark
+        const benchmarkResult = await runCommand(`node "${benchmarkFile}"`, path.dirname(benchmarkFile));
+        outputChannel.appendLine(`Benchmark result: ${benchmarkResult}`);
+        
+        // Read the JSON results if available
+        const resultsPath = path.join(path.dirname(benchmarkFile), 'benchmark-results.json');
+        if (fs.existsSync(resultsPath)) {
+            try {
+                const resultsJson = fs.readFileSync(resultsPath, 'utf8');
+                outputChannel.appendLine('Read benchmark results from JSON file');
+                return resultsJson;
+            } catch (err) {
+                outputChannel.appendLine(`Error reading results JSON: ${err}`);
+            }
+        }
+        
+        // Return the raw output if JSON file is not available
+        return benchmarkResult;
+    } catch (error: any) {
+        outputChannel.appendLine(`Error in benchmark: ${error.message}`);
+        throw new Error(`Failed to run benchmark: ${error.message}`);
+    }
+}
+
+/**
+ * Run a command asynchronously
+ */
+async function runCommand(command: string, cwd: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+        child_process.exec(command, { cwd }, (error, stdout, stderr) => {
+            if (error) {
+                outputChannel.appendLine(`Command error: ${error.message}`);
+                outputChannel.appendLine(`stderr: ${stderr}`);
+                reject(new Error(`Command failed: ${error.message}`));
+                return;
+            }
+            resolve(stdout);
+        });
+    });
+}
+
+/**
+ * Format benchmark results with Copilot
+ */
+async function formatBenchmarkResultsWithCopilot(functions: Record<string, string>, benchmarkResults: string): Promise<string> {
+    outputChannel.appendLine('Formatting benchmark results with Copilot...');
+    
+    try {
+        // Create a temporary file for Copilot to format the results
+        const formatPrompt = `
+# Benchmark Results
+
+Here are the functions that were benchmarked:
+
+${Object.entries(functions).map(([name, code]) => `## ${name}\n\`\`\`js\n${code}\n\`\`\``).join('\n\n')}
+
+## Raw Benchmark Results
+\`\`\`
+${benchmarkResults}
 \`\`\`
 
-Please:
-1. Analyze the time complexity of the original function
-2. Analyze the space complexity of the original function
-3. Explain the algorithm and potential bottlenecks
-4. Provide two alternative implementations with better performance characteristics
-5. Name the implementations "alternativeOne" and "alternativeTwo"
-6. Explain why each alternative should perform better
-
-Format your response as markdown.
+Please format these benchmark results in a nice way, identifying the fastest function and explaining why it might be faster. Also suggest any other optimizations that could be made.
 `;
 
-        // Try to open Copilot Chat
-        const chatExtension = vscode.extensions.getExtension('GitHub.copilot-chat');
-        if (chatExtension && chatExtension.isActive) {
-            // Open Chat panel directly if it's available
-            outputChannel.appendLine('Copilot Chat extension is active, trying to open panel');
-            
-            // Try opening the panel by command
-            try {
-                await vscode.commands.executeCommand('github.copilot.interactiveEditor.explain');
-                await vscode.commands.executeCommand('workbench.action.focusActiveEditorGroup');
-                
-                // Wait for the interface to load
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                // Type the prompt
-                await vscode.env.clipboard.writeText(analysisPrompt);
-                await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
-                
-                // Submit the prompt
-                await vscode.commands.executeCommand('editor.action.addCommentLine');
-                
-                // Wait for a response (this is just a placeholder since we can't easily capture the response from chat)
-                await new Promise(resolve => setTimeout(resolve, 5000));
-                
-                // For Chat, we'll need to return a dummy string since we can't capture the output
-                return "Analysis has been sent to Copilot Chat. Please check the chat panel.";
-            } catch (chatErr) {
-                outputChannel.appendLine(`Error using Copilot Chat panel: ${chatErr}`);
-            }
-        }
+        const formatFile = await createTempFile(formatPrompt, 'format-results.md');
         
-        // If direct chat panel didn't work, try opening a temp file for chatting
-        outputChannel.appendLine('Direct chat panel failed, trying temp file approach');
-        const tempChatFile = await createTempFile(analysisPrompt, 'perf-chat-prompt.md');
+        // Open the file
+        const document = await vscode.workspace.openTextDocument(formatFile);
+        await vscode.window.showTextDocument(document);
         
-        // Open the temp file
-        const chatDoc = await vscode.workspace.openTextDocument(tempChatFile);
-        await vscode.window.showTextDocument(chatDoc);
+        // Send to Copilot Chat
+        await vscode.commands.executeCommand('github.copilot.chat.sendToChat');
         
-        // Try to trigger Copilot chat/explain command
-        try {
-            await vscode.commands.executeCommand('github.copilot.generate');
-            // Wait a bit for the generation
-            await new Promise(resolve => setTimeout(resolve, 5000));
-            
-            // Get the response text (might be incomplete)
-            const responseText = chatDoc.getText();
-            
-            // Clean up
-            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-            try {
-                fs.unlinkSync(tempChatFile);
-            } catch {}
-            
-            // Extract just the response part (after our prompt)
-            return responseText.substring(analysisPrompt.length).trim();
-        } catch (err) {
-            outputChannel.appendLine(`Error generating with Copilot: ${err}`);
-            return "";
-        }
-    } catch (error: any) {
-        outputChannel.appendLine(`Error in Copilot Chat analysis: ${error.message}`);
-        return "";
-    }
-}
-
-/**
- * Analyze a function using inline suggestions
- */
-async function analyzeFunctionUsingInlineSuggestions(functionText: string): Promise<string> {
-    outputChannel.appendLine('Attempting to use inline suggestions for analysis...');
-    
-    try {
-        // Create content for the temp file
-        const analysisContent = createAnalysisContent(functionText);
-        const tempFilePath = await createTempFile(analysisContent, 'perf-analysis.js');
+        // Wait for response
+        await new Promise(resolve => setTimeout(resolve, 7000));
         
-        outputChannel.appendLine(`Created temp file at: ${tempFilePath}`);
+        // Get the response
+        const formattedResponse = document.getText();
         
-        // Open the temp file
-        const document = await vscode.workspace.openTextDocument(tempFilePath);
-        const tempEditor = await vscode.window.showTextDocument(document, { preview: true });
-        
-        // Make sure inline suggestions are enabled
-        const config = vscode.workspace.getConfiguration('editor');
-        const inlineSuggestEnabled = config.get('inlineSuggest.enabled');
-        if (!inlineSuggestEnabled) {
-            await config.update('inlineSuggest.enabled', true, true);
-        }
-        
-        // Place cursor at the end of the document
-        const lastLine = document.lineCount - 1;
-        const lastChar = document.lineAt(lastLine).text.length;
-        tempEditor.selection = new vscode.Selection(
-            new vscode.Position(lastLine, lastChar),
-            new vscode.Position(lastLine, lastChar)
-        );
-        
-        // Force trigger inline suggestions
-        await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-        outputChannel.appendLine('Triggered inline suggestions');
-        
-        // Wait for Copilot to analyze and provide suggestions
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
-        // Check if we got an inline suggestion and accept it
-        await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
-        outputChannel.appendLine('Accepted inline suggestions');
-        
-        // Wait a little more for the suggestion to be accepted
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Get the entire document text which should now include the Copilot analysis
-        const analysisText = document.getText();
-        const analysis = extractAnalysis(analysisText, analysisContent);
-        
-        outputChannel.appendLine(`Analysis extracted (${analysis.length} chars)`);
-        
-        // Close the temp editor
+        // Close the editor
         await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
         
-        // Delete the temp file
-        try {
-            fs.unlinkSync(tempFilePath);
-            outputChannel.appendLine('Deleted temp file');
-        } catch (err) {
-            // Ignore deletion errors
-            outputChannel.appendLine(`Failed to delete temp file: ${err}`);
-        }
+        // Extract the formatted part (after the prompt)
+        const splitPoint = formattedResponse.indexOf('# Benchmark Results');
+        const formatted = splitPoint >= 0
+            ? formattedResponse.substring(splitPoint)
+            : formattedResponse;
         
-        // Restore inline suggest setting if needed
-        if (!inlineSuggestEnabled) {
-            await config.update('inlineSuggest.enabled', false, true);
-        }
-        
-        return analysis;
+        return formatted;
     } catch (error: any) {
-        outputChannel.appendLine(`Error in inline suggestions analysis: ${error.message}`);
-        return "";
-    }
-}
+        outputChannel.appendLine(`Error formatting results: ${error.message}`);
+        // Return a basic format if Copilot formatting fails
+        return `# Benchmark Results
 
-/**
- * Get benchmark results for a function
- */
-async function getBenchmarkResults(functionText: string): Promise<string> {
-    outputChannel.appendLine('Attempting to get benchmark results...');
-    
-    try {
-        // Create content for the benchmark temp file
-        const benchmarkContent = createBenchmarkContent(functionText);
-        const benchTempFilePath = await createTempFile(benchmarkContent, 'perf-benchmark.js');
-        
-        outputChannel.appendLine(`Created benchmark temp file at: ${benchTempFilePath}`);
-        
-        // Open the benchmark temp file
-        const benchDocument = await vscode.workspace.openTextDocument(benchTempFilePath);
-        const benchEditor = await vscode.window.showTextDocument(benchDocument, { preview: true });
-        
-        // Make sure inline suggestions are enabled
-        const config = vscode.workspace.getConfiguration('editor');
-        const inlineSuggestEnabled = config.get('inlineSuggest.enabled');
-        if (!inlineSuggestEnabled) {
-            await config.update('inlineSuggest.enabled', true, true);
-        }
-        
-        // Place cursor at the end of the document
-        const benchLastLine = benchDocument.lineCount - 1;
-        const benchLastChar = benchDocument.lineAt(benchLastLine).text.length;
-        benchEditor.selection = new vscode.Selection(
-            new vscode.Position(benchLastLine, benchLastChar),
-            new vscode.Position(benchLastLine, benchLastChar)
-        );
-        
-        // Force trigger inline suggestions
-        await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-        outputChannel.appendLine('Triggered benchmark inline suggestions');
-        
-        // Wait for Copilot to analyze and provide suggestions
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
-        // Accept the suggestion
-        await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
-        outputChannel.appendLine('Accepted benchmark inline suggestions');
-        
-        // Wait a little more
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        
-        // Get the benchmark text
-        const benchmarkText = benchDocument.getText();
-        const benchmarkResults = extractAnalysis(benchmarkText, benchmarkContent);
-        
-        outputChannel.appendLine(`Benchmark results extracted (${benchmarkResults.length} chars)`);
-        
-        // Close the benchmark editor
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-        
-        // Delete the benchmark temp file
-        try {
-            fs.unlinkSync(benchTempFilePath);
-            outputChannel.appendLine('Deleted benchmark temp file');
-        } catch (err) {
-            // Ignore deletion errors
-            outputChannel.appendLine(`Failed to delete benchmark temp file: ${err}`);
-        }
-        
-        // Restore inline suggest setting if needed
-        if (!inlineSuggestEnabled) {
-            await config.update('inlineSuggest.enabled', false, true);
-        }
-        
-        return benchmarkResults;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error in benchmark analysis: ${error.message}`);
-        return "";
-    }
-}
+${benchmarkResults}
 
-/**
- * Alternative method to analyze a function with fallback
- */
-async function analyzeFunctionWithAlternative(functionText: string): Promise<string> {
-    outputChannel.appendLine('Attempting alternative function analysis method...');
-    
-    try {
-        // This is a third fallback method that might work in environments like GitHub.dev
-        // Try to use VS Code's built-in commands for AI features
-        
-        // Create a new untitled document with the function
-        const doc = await vscode.workspace.openTextDocument({ 
-            content: `
-// Function to analyze:
-${functionText}
-
-/*
-Please analyze this function and provide:
-1. Time complexity analysis
-2. Space complexity analysis
-3. Algorithm explanation with bottlenecks
-4. Two alternative implementations named "alternativeOne" and "alternativeTwo"
-5. Performance comparison between implementations
-
-The output should be formatted as markdown.
-*/
-
-// Analysis:
-
-`,
-            language: 'javascript'
-        });
-        
-        // Show the document
-        const editor = await vscode.window.showTextDocument(doc);
-        
-        // Position cursor where we want the suggestions
-        const line = doc.lineCount - 1;
-        editor.selection = new vscode.Selection(
-            new vscode.Position(line, 0),
-            new vscode.Position(line, 0)
-        );
-        
-        // Try various commands that might trigger AI assistance
-        const commands = [
-            'editor.action.inlineSuggest.trigger',
-            'github.copilot.generate',
-            'editor.action.inlineCompletionShow',
-            'editor.action.inlineSuggest.showNext',
-            'github.copilot.interactiveEditor.explain'
-        ];
-        
-        for (const command of commands) {
-            try {
-                outputChannel.appendLine(`Trying command: ${command}`);
-                await vscode.commands.executeCommand(command);
-                // Wait a bit to see if it worked
-                await new Promise(resolve => setTimeout(resolve, 3000));
-                
-                // Check if we got content
-                const text = doc.getText();
-                if (text.length > 500) {  // Arbitrary length that's more than our template
-                    outputChannel.appendLine(`Got response with command: ${command}`);
-                    break;
-                }
-            } catch (err) {
-                outputChannel.appendLine(`Command ${command} failed: ${err}`);
-            }
-        }
-        
-        // Wait a bit longer for any slow responses
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // Get the text and extract the analysis part
-        const text = doc.getText();
-        let analysis = text.split('// Analysis:')[1] || '';
-        
-        // If we didn't get anything useful, add a basic placeholder
-        if (analysis.length < 50) {
-            analysis = `
-Unfortunately, the automated analysis could not generate a response. Here are some general guidelines:
-
-Time Complexity: 
-- Check if the function has nested loops (O(n²))
-- Look for linear scans (O(n))
-- Identify constant time operations (O(1))
-
-Space Complexity:
-- Note how much extra memory is allocated
-- Check if memory usage scales with input size
-
-Alternative Implementations:
-- Consider using built-in methods
-- Look for algorithms with better time complexity
-- Consider memoization or caching
+## Functions
+${Object.entries(functions).map(([name, code]) => `### ${name}\n\`\`\`js\n${code}\n\`\`\``).join('\n\n')}
 `;
-        }
-        
-        // Close the editor without saving
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor', { silent: true });
-        
-        return analysis;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error in alternative analysis: ${error.message}`);
-        return "";
     }
 }
 
@@ -511,67 +351,6 @@ async function createTempFile(content: string, fileName: string): Promise<string
             }
         });
     });
-}
-
-/**
- * Create the content for the analysis file
- */
-function createAnalysisContent(functionText: string): string {
-    return `// PerfCopilot Function Analysis
-// Function to analyze:
-
-${functionText}
-
-/*
-Please provide an analysis of the function above, including:
-1. Time complexity analysis
-2. Space complexity analysis
-3. Explanation of the algorithm and possible bottlenecks
-4. Two alternative implementations with better performance characteristics
-
-Please name the alternative implementations "alternativeOne" and "alternativeTwo" and
-explain the performance improvements in each.
-
-Format your response as markdown.
-*/
-
-// Analysis:
-`;
-}
-
-/**
- * Create the content for the benchmark file
- */
-function createBenchmarkContent(functionText: string): string {
-    return `// PerfCopilot Benchmark Analysis
-// Original function:
-
-${functionText}
-
-/*
-Please provide a benchmarking analysis using the Benny.js library. Include:
-1. A complete benchmark script that compares the original function with two optimized alternatives
-2. Real benchmark results showing operations per second
-3. An explanation of which implementation is fastest and why
-
-Format your response as markdown.
-*/
-
-// Benchmark Analysis:
-`;
-}
-
-/**
- * Extract the analysis from the full text
- */
-function extractAnalysis(fullText: string, promptText: string): string {
-    // Get everything after the initial prompt
-    if (fullText.length <= promptText.length) {
-        return "No analysis was generated. Please try again or make sure GitHub Copilot is properly configured.";
-    }
-    
-    // Extract the analysis - everything after the prompt
-    return fullText.substring(promptText.length).trim();
 }
 
 function getLoadingHtml(): string {
