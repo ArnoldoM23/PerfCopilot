@@ -142,10 +142,47 @@ export function activate(context: vscode.ExtensionContext) {
                 await new Promise(resolve => setTimeout(resolve, 10000));
                 
                 // Type the second query
-                const secondQuery = "can you now use benny to test the three functions.";
+                const secondQuery = `can you now use benny to test the three functions. Here's a template:
+
+const b = require('benny');
+
+// The three functions to benchmark
+
+// Original function 
+// (paste the original function here)
+
+// Alternative 1
+// (paste the first alternative function here)
+
+// Alternative 2
+// (paste the second alternative function here)
+
+// Create test data
+const testArray = Array.from({ length: 100000 }, () => Math.random());
+
+// Run the benchmark
+b.suite(
+  'Array Sum Functions Benchmark',
+
+  b.add('Original Function', () => {
+    // Call the original function with testArray
+  }),
+
+  b.add('Alternative 1', () => {
+    // Call alternative 1 with testArray
+  }),
+
+  b.add('Alternative 2', () => {
+    // Call alternative 2 with testArray
+  }),
+
+  b.cycle(),
+  b.complete(),
+  b.save({ file: 'results', format: 'json' })
+);`;
                 await vscode.env.clipboard.writeText(secondQuery);
                 await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
-                outputChannel.appendLine('Typed second query');
+                outputChannel.appendLine('Typed second query with Benny.js template');
                 
                 // Try the submit commands again for the second query
                 for (const cmd of submitCommands) {
@@ -200,7 +237,50 @@ export function activate(context: vscode.ExtensionContext) {
                 }, 3000);
                 
                 setTimeout(() => {
-                    vscode.window.showInformationMessage('4. After getting the response, ask: "can you now use benny to test the three functions."');
+                    const benchmarkInstructions = 'After getting the response, ask Copilot to create a benchmark with Benny.js. Use View > Output > PerfCopilot to see the template.';
+                    vscode.window.showInformationMessage('4. ' + benchmarkInstructions);
+                    
+                    // Show the template in the output channel so the user can copy it
+                    outputChannel.appendLine('\n--- BENCHMARK TEMPLATE ---');
+                    outputChannel.appendLine(`
+const b = require('benny');
+
+// The three functions to benchmark (paste them here from the chat)
+
+// Original function 
+// (original function here)
+
+// Alternative 1
+// (alternative 1 here)
+
+// Alternative 2
+// (alternative 2 here)
+
+// Create test data
+const testArray = Array.from({ length: 100000 }, () => Math.random());
+
+// Run the benchmark
+b.suite(
+  'Array Sum Functions Benchmark',
+
+  b.add('Original Function', () => {
+    // Call the original function with testArray
+  }),
+
+  b.add('Alternative 1', () => {
+    // Call alternative 1 with testArray
+  }),
+
+  b.add('Alternative 2', () => {
+    // Call alternative 2 with testArray
+  }),
+
+  b.cycle(),
+  b.complete(),
+  b.save({ file: 'results', format: 'json' })
+);`);
+                    outputChannel.appendLine('--- END TEMPLATE ---\n');
+                    outputChannel.show();
                 }, 4000);
             }
         } catch (error) {
