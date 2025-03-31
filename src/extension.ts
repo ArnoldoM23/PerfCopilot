@@ -1,11 +1,7 @@
 import * as vscode from 'vscode';
-
-// Type definition for Copilot Chat API
-interface CopilotChatApi {
-    requestChatResponse: (prompt: string) => Promise<string>;
-    createChatRequest?: (prompt: string) => Promise<{ content: string }>;
-    createConversation?: () => Promise<{ sendMessage: (prompt: string) => Promise<{ response: string }> }>;
-}
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 // The extension output channel
 const outputChannel = vscode.window.createOutputChannel('PerfCopilot');
@@ -50,70 +46,111 @@ export function activate(context: vscode.ExtensionContext) {
             // Set loading state
             panel.webview.html = getLoadingHtml();
             
-            // First check if Copilot is available
-            if (!await isCopilotAvailable()) {
-                panel.webview.html = getErrorHtml("GitHub Copilot is not available. Please install and sign in to GitHub Copilot or GitHub Copilot Chat extensions.");
-                return;
-            }
-            
-            // First try to analyze the function
-            const analysisPrompt = `
-I need you to analyze this JavaScript function and provide two alternative implementations that should be more efficient:
-
-\`\`\`javascript
-${selectedText}
-\`\`\`
-
-Please:
-1. Analyze the time and space complexity of the original function
-2. Provide two alternative implementations with better algorithmic approaches 
-3. Name the implementations "alternativeOne" and "alternativeTwo"
-4. Explain why each alternative should perform better
-
-Format your response with clear code blocks for each implementation.
-`;
-
             try {
-                // Get the analysis using requestChatResponse from the API
-                outputChannel.appendLine('Requesting function analysis from Copilot...');
-                const analysis = await requestCopilotChatResponse(analysisPrompt);
+                // Use a simple approach - create a temporary file with our instructions and function
+                const analysisContent = createAnalysisContent(selectedText);
+                const tempFilePath = await createTempFile(analysisContent, 'perf-analysis.js');
                 
-                if (!analysis) {
-                    panel.webview.html = getErrorHtml("Couldn't get a response from Copilot API. Please try again or restart VS Code.");
-                    return;
+                // Open the temp file
+                const document = await vscode.workspace.openTextDocument(tempFilePath);
+                const tempEditor = await vscode.window.showTextDocument(document, { preview: true });
+                
+                // Place cursor at the end of the document
+                const lastLine = document.lineCount - 1;
+                const lastChar = document.lineAt(lastLine).text.length;
+                tempEditor.selection = new vscode.Selection(
+                    new vscode.Position(lastLine, lastChar),
+                    new vscode.Position(lastLine, lastChar)
+                );
+                
+                // Tell the user what's happening
+                vscode.window.showInformationMessage('Please wait while Copilot analyzes the function. This may take a few seconds...');
+                
+                // Wait 5 seconds to ensure Copilot has time to analyze and provide suggestions
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Check if we got an inline suggestion and accept it
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
+                
+                // Wait a little more for the suggestion to be accepted
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Get the entire document text which should now include the Copilot analysis
+                const analysisText = document.getText();
+                const analysis = extractAnalysis(analysisText, analysisContent);
+                
+                // Close the temp editor
+                await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                
+                // Delete the temp file
+                try {
+                    fs.unlinkSync(tempFilePath);
+                } catch (err) {
+                    // Ignore deletion errors
                 }
                 
-                outputChannel.appendLine('Analysis received from Copilot. Getting benchmark information...');
+                // Create the benchmark content
+                const benchmarkContent = createBenchmarkContent(selectedText);
+                const benchTempFilePath = await createTempFile(benchmarkContent, 'perf-benchmark.js');
                 
-                // Now get benchmark information
-                const benchmarkPrompt = `
-Now I want you to create a benchmarking test using Benny.js to compare the original function with the two alternatives you just created.
-
-Original function:
-\`\`\`javascript
-${selectedText}
-\`\`\`
-
-Please:
-1. Create a complete benchmarking script using Benny.js that compares all three implementations
-2. Make sure to include realistic test cases that work with all implementations
-3. Analyze the benchmark results and explain which implementation is fastest and why
-4. Present the benchmark results in a table format showing ops/sec
-
-Run the benchmark and show me the complete results.
-`;
-
-                const benchmarkResults = await requestCopilotChatResponse(benchmarkPrompt);
+                // Open the benchmark temp file
+                const benchDocument = await vscode.workspace.openTextDocument(benchTempFilePath);
+                const benchEditor = await vscode.window.showTextDocument(benchDocument, { preview: true });
                 
-                // Combine the results and display them
-                const combinedAnalysis = analysis + "\n\n## Benchmark Results\n\n" + (benchmarkResults || "No benchmark results available.");
+                // Place cursor at the end of the document
+                const benchLastLine = benchDocument.lineCount - 1;
+                const benchLastChar = benchDocument.lineAt(benchLastLine).text.length;
+                benchEditor.selection = new vscode.Selection(
+                    new vscode.Position(benchLastLine, benchLastChar),
+                    new vscode.Position(benchLastLine, benchLastChar)
+                );
                 
-                panel.webview.html = getResultsHtml(combinedAnalysis);
-                outputChannel.appendLine('Analysis complete and displayed.');
+                // Show info message
+                vscode.window.showInformationMessage('Now generating benchmark comparison...');
+                
+                // Wait for Copilot to analyze and provide suggestions
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Accept the suggestion
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
+                
+                // Wait a little more
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Get the benchmark text
+                const benchmarkText = benchDocument.getText();
+                const benchmarkResults = extractAnalysis(benchmarkText, benchmarkContent);
+                
+                // Close the benchmark editor
+                await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                
+                // Delete the benchmark temp file
+                try {
+                    fs.unlinkSync(benchTempFilePath);
+                } catch (err) {
+                    // Ignore deletion errors
+                }
+                
+                // Combine the analysis and benchmark results
+                const fullAnalysis = `# Function Performance Analysis
+
+${analysis}
+
+## Benchmark Results
+
+${benchmarkResults}`;
+                
+                // Display the results
+                panel.webview.html = getResultsHtml(fullAnalysis);
+                
+                // Bring the panel to focus
+                panel.reveal(vscode.ViewColumn.Two);
+                
             } catch (error: any) {
-                outputChannel.appendLine(`Error during Copilot analysis: ${error.message}`);
-                panel.webview.html = getErrorHtml(`Error: ${error.message}`);
+                outputChannel.appendLine(`Error during analysis: ${error.message}`);
+                panel.webview.html = getErrorHtml(`An error occurred: ${error.message}. Make sure GitHub Copilot is properly installed and signed in.`);
             }
+            
         } catch (error: any) {
             vscode.window.showErrorMessage(`Error analyzing function: ${error.message || error}`);
         }
@@ -130,165 +167,82 @@ Run the benchmark and show me the complete results.
 }
 
 /**
- * Check if GitHub Copilot or Copilot Chat is available
+ * Create a temporary file with the provided content
  */
-async function isCopilotAvailable(): Promise<boolean> {
-    try {
-        // Check for Copilot Chat extension
-        const copilotChatExt = vscode.extensions.getExtension('GitHub.copilot-chat');
-        if (copilotChatExt) {
-            outputChannel.appendLine('GitHub Copilot Chat extension found');
-            
-            if (!copilotChatExt.isActive) {
-                outputChannel.appendLine('Activating GitHub Copilot Chat extension...');
-                await copilotChatExt.activate();
+async function createTempFile(content: string, fileName: string): Promise<string> {
+    const tempDir = os.tmpdir();
+    const tempFilePath = path.join(tempDir, fileName);
+    
+    return new Promise((resolve, reject) => {
+        fs.writeFile(tempFilePath, content, 'utf8', (err) => {
+            if (err) {
+                reject(err);
+            } else {
+                resolve(tempFilePath);
             }
-            
-            const api = copilotChatExt.exports;
-            outputChannel.appendLine(`Copilot Chat API available methods: ${Object.keys(api || {}).join(', ')}`);
-            
-            if (api && (api.requestChatResponse || api.createChatRequest || api.createConversation)) {
-                return true;
-            }
-        }
-        
-        // Check for standard Copilot extension
-        const copilotExt = vscode.extensions.getExtension('GitHub.copilot');
-        if (copilotExt) {
-            outputChannel.appendLine('GitHub Copilot extension found');
-            
-            if (!copilotExt.isActive) {
-                outputChannel.appendLine('Activating GitHub Copilot extension...');
-                await copilotExt.activate();
-            }
-            
-            const api = copilotExt.exports;
-            outputChannel.appendLine(`Copilot API available methods: ${Object.keys(api || {}).join(', ')}`);
-            
-            return true;
-        }
-        
-        outputChannel.appendLine('Neither GitHub Copilot nor Copilot Chat extension found');
-        return false;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error checking Copilot availability: ${error.message}`);
-        return false;
-    }
+        });
+    });
 }
 
 /**
- * Request a response from Copilot Chat using available API methods
+ * Create the content for the analysis file
  */
-async function requestCopilotChatResponse(prompt: string): Promise<string | null> {
-    try {
-        outputChannel.appendLine('Attempting to get response from Copilot Chat...');
-        
-        // Try Copilot Chat first
-        const copilotChatExt = vscode.extensions.getExtension('GitHub.copilot-chat');
-        if (copilotChatExt && copilotChatExt.isActive) {
-            const api = copilotChatExt.exports as CopilotChatApi;
-            
-            // Method 1: Direct requestChatResponse (from your example)
-            if (api.requestChatResponse) {
-                outputChannel.appendLine('Using requestChatResponse method');
-                try {
-                    const response = await api.requestChatResponse(prompt);
-                    if (response) {
-                        outputChannel.appendLine('Successfully received response from requestChatResponse');
-                        return response;
-                    }
-                } catch (error: any) {
-                    outputChannel.appendLine(`Error with requestChatResponse: ${error.message}`);
-                }
-            }
-            
-            // Method 2: createChatRequest
-            if (api.createChatRequest) {
-                outputChannel.appendLine('Using createChatRequest method');
-                try {
-                    const response = await api.createChatRequest(prompt);
-                    if (response && response.content) {
-                        outputChannel.appendLine('Successfully received response from createChatRequest');
-                        return response.content;
-                    }
-                } catch (error: any) {
-                    outputChannel.appendLine(`Error with createChatRequest: ${error.message}`);
-                }
-            }
-            
-            // Method 3: createConversation
-            if (api.createConversation) {
-                outputChannel.appendLine('Using createConversation method');
-                try {
-                    const conversation = await api.createConversation();
-                    if (conversation && conversation.sendMessage) {
-                        const response = await conversation.sendMessage(prompt);
-                        if (response && response.response) {
-                            outputChannel.appendLine('Successfully received response from createConversation');
-                            return response.response;
-                        }
-                    }
-                } catch (error: any) {
-                    outputChannel.appendLine(`Error with createConversation: ${error.message}`);
-                }
-            }
-        }
-        
-        // Try standard Copilot as a fallback
-        const copilotExt = vscode.extensions.getExtension('GitHub.copilot');
-        if (copilotExt && copilotExt.isActive) {
-            outputChannel.appendLine('Falling back to standard Copilot...');
-            
-            // Last resort: use inline suggestions without UI
-            try {
-                outputChannel.appendLine('Using untitled document method');
-                
-                // Create a temporary document
-                const document = await vscode.workspace.openTextDocument({
-                    language: 'markdown',
-                    content: prompt
-                });
-                
-                // Show the document temporarily
-                const editor = await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.One });
-                
-                // Position cursor at the end
-                const position = new vscode.Position(document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length);
-                editor.selection = new vscode.Selection(position, position);
-                
-                // Wait for Copilot to initialize
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                // Trigger inline suggestions
-                await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-                
-                // Wait for suggestions to appear and accept
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
-                
-                // Get the completion
-                const newText = document.getText();
-                const completion = newText.substring(prompt.length);
-                
-                // Close without saving
-                await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-                
-                if (completion && completion.trim().length > 0) {
-                    outputChannel.appendLine('Successfully received inline suggestion');
-                    return completion;
-                }
-            } catch (error: any) {
-                outputChannel.appendLine(`Error with inline suggestions: ${error.message}`);
-            }
-        }
-        
-        // If all methods failed, return null
-        outputChannel.appendLine('All methods to get a Copilot response failed');
-        return null;
-    } catch (error: any) {
-        outputChannel.appendLine(`Error requesting Copilot response: ${error.message}`);
-        return null;
+function createAnalysisContent(functionText: string): string {
+    return `// PerfCopilot Function Analysis
+// Function to analyze:
+
+${functionText}
+
+/*
+Please provide an analysis of the function above, including:
+1. Time complexity analysis
+2. Space complexity analysis
+3. Explanation of the algorithm and possible bottlenecks
+4. Two alternative implementations with better performance characteristics
+
+Please name the alternative implementations "alternativeOne" and "alternativeTwo" and
+explain the performance improvements in each.
+
+Format your response as markdown.
+*/
+
+// Analysis:
+`;
+}
+
+/**
+ * Create the content for the benchmark file
+ */
+function createBenchmarkContent(functionText: string): string {
+    return `// PerfCopilot Benchmark Analysis
+// Original function:
+
+${functionText}
+
+/*
+Please provide a benchmarking analysis using the Benny.js library. Include:
+1. A complete benchmark script that compares the original function with two optimized alternatives
+2. Real benchmark results showing operations per second
+3. An explanation of which implementation is fastest and why
+
+Format your response as markdown.
+*/
+
+// Benchmark Analysis:
+`;
+}
+
+/**
+ * Extract the analysis from the full text
+ */
+function extractAnalysis(fullText: string, promptText: string): string {
+    // Get everything after the initial prompt
+    if (fullText.length <= promptText.length) {
+        return "No analysis was generated. Please try again or make sure GitHub Copilot is properly configured.";
     }
+    
+    // Extract the analysis - everything after the prompt
+    return fullText.substring(promptText.length).trim();
 }
 
 function getLoadingHtml(): string {
@@ -365,7 +319,6 @@ function getErrorHtml(errorMessage: string): string {
                 <p>${escapeHtml(errorMessage)}</p>
             </div>
             <p>Please make sure GitHub Copilot is properly installed and try again.</p>
-            <button onclick="window.location.reload()">Try Again</button>
         </div>
     </body>
     </html>`;
@@ -421,7 +374,6 @@ function getResultsHtml(analysis: string): string {
     </head>
     <body>
         <div class="container markdown-body">
-            <h1>Function Performance Analysis</h1>
             <div id="analysis">
 ${convertMarkdownToHtml(analysis)}
             </div>
