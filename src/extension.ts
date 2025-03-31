@@ -20,25 +20,26 @@ interface CaseResultWithDiff {
  */
 export function activate(context: vscode.ExtensionContext) {
     outputChannel = vscode.window.createOutputChannel('PerfCopilot');
-    context.subscriptions.push(outputChannel);
+    outputChannel.appendLine('PerfCopilot extension activated');
     
     let disposable = vscode.commands.registerCommand('perfcopilot.analyzeFunction', async () => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-            vscode.window.showErrorMessage('No active editor found');
-            return;
-        }
-
-        const selection = editor.selection;
-        const originalFunction = editor.document.getText(selection);
-        
-        if (!originalFunction) {
-            vscode.window.showErrorMessage('Please select a function to analyze');
-            return;
-        }
-
         try {
-            // Create a webview panel
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                vscode.window.showErrorMessage('No active editor found');
+                return;
+            }
+
+            const selection = editor.selection;
+            if (selection.isEmpty) {
+                vscode.window.showErrorMessage('Please select a function to analyze');
+                return;
+            }
+
+            const originalFunction = editor.document.getText(selection);
+            outputChannel.appendLine(`Analyzing function: ${originalFunction.substring(0, 100)}...`);
+
+            // Create a WebView panel
             const panel = vscode.window.createWebviewPanel(
                 'functionAnalysis',
                 'Function Performance Analysis',
@@ -46,40 +47,55 @@ export function activate(context: vscode.ExtensionContext) {
                 { enableScripts: true }
             );
 
+            // Show loading indicator
             panel.webview.html = getLoadingContent();
             
-            // Create a temporary file for Copilot to analyze and generate alternatives
+            // Create a temporary document for Copilot to analyze
             const tempDoc = await vscode.workspace.openTextDocument({
-                content: `// Here's a function to analyze:
+                content: `
+// Original Function:
 ${originalFunction}
 
-// Let's generate two alternative implementations and benchmark them.
-// First, an optimized version focusing on performance:
+// TASK: Analyze this function's performance and generate optimized alternatives.
+//
+// Please include:
+// 1. Time complexity analysis (Big O)
+// 2. Space complexity analysis (Big O)
+// 3. Performance characteristics explanation
+// 4. At least 1-2 optimized alternative implementations
+// 5. Benchmark comparison between original and alternatives
+//
+// FORMAT YOUR RESPONSE LIKE THIS:
+/*
+Time Complexity: O(?)
+Space Complexity: O(?)
+Performance Analysis: detailed explanation...
 
-// Second, a version using different JavaScript features:
+Alternative Implementations:
+\`\`\`javascript
+function alternativeOne() {
+  // Your optimized code here
+}
 
-// Now let's benchmark all three versions using Benny:
+function alternativeTwo() {
+  // Your second implementation here
+}
+\`\`\`
 
-const benchmark = async () => {
-    const results = await benny.suite(
-        'Function Performance Comparison',
-        benny.add('Original', () => {
-            ${originalFunction}
-            // Add test call here
-        }),
-        benny.add('Alternative 1', () => {
-            // Add first alternative here
-        }),
-        benny.add('Alternative 2', () => {
-            // Add second alternative here
-        }),
-        benny.cycle(),
-        benny.complete()
-    );
-    return results;
-};
+Benchmark Results:
+\`\`\`json
+{
+  "fastest": "nameOfFastestFunction",
+  "results": [
+    {"name": "original", "ops": 1000000, "margin": 0.5},
+    {"name": "alternativeOne", "ops": 1500000, "margin": 0.5}
+  ]
+}
+\`\`\`
+*/
 
-// Let's analyze the performance differences:
+// Let's analyze the code:
+
 `,
                 language: 'javascript'
             });
@@ -87,17 +103,53 @@ const benchmark = async () => {
             // Get Copilot's complete analysis and implementation
             const analysis = await getCopilotSuggestion(tempDoc, tempDoc.lineCount - 1);
             
-            // Extract the benchmark results from the analysis
-            const resultsMatch = analysis.match(/Results:\s*({[\s\S]*})/);
-            if (!resultsMatch) {
-                throw new Error('Could not extract benchmark results from analysis');
-            }
-
+            // Log the full analysis for debugging
+            outputChannel.appendLine('Raw Copilot Analysis:');
+            outputChannel.appendLine(analysis);
+            
+            // Extract benchmark results from the analysis
             try {
-                const results = JSON.parse(resultsMatch[1]);
+                // Look for JSON inside the analysis - try multiple patterns
+                let jsonMatch = analysis.match(/```json\s*([\s\S]*?)\s*```/);
+                if (!jsonMatch) {
+                    jsonMatch = analysis.match(/Benchmark Results:[\s\S]*?({[\s\S]*?})/);
+                }
+                if (!jsonMatch) {
+                    jsonMatch = analysis.match(/Results:\s*({[\s\S]*?})/);
+                }
+                if (!jsonMatch) {
+                    // Show the analysis anyway, without benchmark data
+                    outputChannel.appendLine('No benchmark results found in JSON format. Showing raw analysis.');
+                    panel.webview.html = getWebviewContentWithAnalysis({}, analysis);
+                    panel.reveal(vscode.ViewColumn.Two);
+                    return;
+                }
+                
+                const jsonText = jsonMatch[1].trim();
+                const results = JSON.parse(jsonText);
+                
+                // Extract alternative implementations
+                const implementations: string[] = [];
+                const codeBlocks = analysis.match(/```(?:javascript|js)?\s*([\s\S]*?)\s*```/g);
+                
+                if (codeBlocks) {
+                    for (const block of codeBlocks) {
+                        const codeContent = block.replace(/```(?:javascript|js)?\s*/, '').replace(/\s*```$/, '');
+                        if (codeContent.includes('function ') && !codeContent.includes(originalFunction.substring(0, 30))) {
+                            implementations.push(codeContent.trim());
+                        }
+                    }
+                }
+                
+                // Add implementations to results if not already there
+                if (!results.suggestions && implementations.length > 0) {
+                    results.suggestions = implementations;
+                }
+                
                 panel.webview.html = getWebviewContentWithAnalysis(results, analysis);
-            } catch (error) {
-                panel.webview.html = getErrorContent('Failed to parse benchmark results', originalFunction, analysis);
+            } catch (error: any) {
+                outputChannel.appendLine(`Error processing analysis: ${error.message}`);
+                panel.webview.html = getWebviewContentWithAnalysis({}, analysis);
             }
             
             panel.reveal(vscode.ViewColumn.Two);
@@ -129,8 +181,19 @@ async function getCopilotSuggestion(document: vscode.TextDocument, line: number)
         await copilot.activate();
     }
 
+    // Give more explicit instructions in the cursor position
+    await vscode.window.showTextDocument(document);
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+        editor.selection = new vscode.Selection(
+            new vscode.Position(line, 0),
+            new vscode.Position(line, 0)
+        );
+    }
+
+    // Trigger Copilot suggestion and wait for it
     await vscode.commands.executeCommand('editor.action.triggerSuggest');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Increased wait time
     
     const suggestions = await vscode.commands.executeCommand<vscode.CompletionList>(
         'vscode.executeCompletionItemProvider',
@@ -200,7 +263,8 @@ function getErrorContent(error: string, originalFunction: string, analysis: stri
     </html>`;
 }
 
-function getWebviewContentWithAnalysis(_results: any, analysis: string): string {
+function getWebviewContentWithAnalysis(results: any, analysis: string): string {
+    // Enhanced HTML template with better styling and structure
     return `<!DOCTYPE html>
     <html lang="en">
     <head>
@@ -211,25 +275,97 @@ function getWebviewContentWithAnalysis(_results: any, analysis: string): string 
             body {
                 padding: 20px;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+                line-height: 1.5;
+                color: #333;
+                max-width: 1200px;
+                margin: 0 auto;
             }
-            pre {
-                background-color: #f5f5f5;
+            .header {
+                margin-bottom: 20px;
+                border-bottom: 1px solid #eee;
+                padding-bottom: 10px;
+            }
+            .analysis {
+                background-color: #f8f9fa;
+                padding: 20px;
+                border-radius: 5px;
+                margin-bottom: 20px;
+                white-space: pre-wrap;
+            }
+            .code-block {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                padding: 15px;
+                border-radius: 4px;
+                overflow-x: auto;
+                margin: 15px 0;
+                font-family: 'Courier New', monospace;
+            }
+            .benchmark {
+                background-color: #f0f7ff;
                 padding: 15px;
                 border-radius: 5px;
-                overflow-x: auto;
+                margin-top: 20px;
             }
-            .error {
-                color: #dc3545;
+            .benchmark h2 {
+                margin-top: 0;
+                color: #0366d6;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 10px;
+            }
+            th, td {
                 padding: 10px;
-                border: 1px solid #dc3545;
-                border-radius: 5px;
-                margin: 10px 0;
+                border: 1px solid #ddd;
+                text-align: left;
+            }
+            th {
+                background-color: #f1f1f1;
+            }
+            .fastest {
+                font-weight: bold;
+                color: #28a745;
             }
         </style>
     </head>
     <body>
-        <h1>Function Performance Analysis</h1>
-        <pre>${escapeHtml(analysis)}</pre>
+        <div class="header">
+            <h1>Function Performance Analysis</h1>
+        </div>
+        
+        <div class="analysis">
+${escapeHtml(analysis)}
+        </div>
+        
+        ${results.results ? `
+        <div class="benchmark">
+            <h2>Benchmark Results</h2>
+            <p>Fastest implementation: <span class="fastest">${escapeHtml(results.fastest || 'Not specified')}</span></p>
+            
+            <table>
+                <thead>
+                    <tr>
+                        <th>Function</th>
+                        <th>Operations/sec</th>
+                        <th>Margin</th>
+                        <th>% Difference</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${results.results.map((result: any) => `
+                    <tr class="${result.name === results.fastest ? 'fastest' : ''}">
+                        <td>${escapeHtml(result.name)}</td>
+                        <td>${result.ops.toLocaleString()}</td>
+                        <td>±${result.margin}%</td>
+                        <td>${result.percentSlower ? result.percentSlower + '%' : 'baseline'}</td>
+                    </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+        ` : ''}
     </body>
     </html>`;
 }

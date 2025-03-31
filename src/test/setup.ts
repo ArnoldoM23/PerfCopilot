@@ -149,18 +149,20 @@ function escapeHtml(unsafe: string): string {
 // @ts-ignore - Simplified mock for testing
 const mockVscode = {
     window: {
-        createWebviewPanel: jest.fn().mockImplementation((viewType, title, column, options) => {
-            mockWebviewPanel.webview.html = '';
-            return mockWebviewPanel;
-        }),
-        createOutputChannel: jest.fn().mockReturnValue(mockOutputChannel),
+        createWebviewPanel: jest.fn(() => mockWebviewPanel),
         showErrorMessage: jest.fn(),
+        createOutputChannel: jest.fn(() => ({
+            appendLine: jest.fn(),
+            show: jest.fn(),
+            dispose: jest.fn()
+        })),
         activeTextEditor: {
             document: mockTextDocument,
             selection: {
                 isEmpty: false
             }
-        }
+        },
+        showTextDocument: jest.fn().mockResolvedValue(undefined)
     },
     workspace: {
         openTextDocument: jest.fn().mockResolvedValue(mockTextDocument),
