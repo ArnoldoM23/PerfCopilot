@@ -92,10 +92,93 @@ export function activate(context: vscode.ExtensionContext) {
                 await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
                 outputChannel.appendLine('Attempted to paste text into chat');
                 
-                // Show additional instructions
+                // Wait another second
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Type the first query
+                const firstQuery = "can you create two alternative functions for this?";
+                await vscode.env.clipboard.writeText(firstQuery);
+                await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+                outputChannel.appendLine('Typed first query');
+                
+                // Try multiple submit commands to find one that works
+                const submitCommands = [
+                    'github.copilot.chat.submit',  // Direct Copilot Chat submit command
+                    'workbench.action.chat.submit', // VSCode chat submit
+                    'editor.action.inlineSuggest.commit', // Generic submit
+                    'workbench.action.terminal.sendSequence', // Terminal sequence
+                    'workbench.action.acceptSelectedQuickOpenItem' // Quick open accept
+                ];
+                
+                for (const cmd of submitCommands) {
+                    try {
+                        if (cmd === 'workbench.action.terminal.sendSequence') {
+                            // Special case for terminal sequence
+                            await vscode.commands.executeCommand(cmd, { text: '\u000D' }); // Carriage return
+                        } else {
+                            await vscode.commands.executeCommand(cmd);
+                        }
+                        outputChannel.appendLine(`Tried submit command: ${cmd}`);
+                    } catch (submitError) {
+                        outputChannel.appendLine(`Submit command failed: ${cmd} - ${submitError}`);
+                    }
+                    
+                    // Small delay between attempts
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+                
+                // Press Enter key directly as a last resort
+                try {
+                    await vscode.commands.executeCommand('type', { text: '\n' });
+                    outputChannel.appendLine('Tried direct Enter key');
+                } catch (typeError) {
+                    outputChannel.appendLine(`Type command failed: ${typeError}`);
+                }
+                
+                outputChannel.appendLine('Tried to submit first query');
+                
+                // Wait for response (10 seconds)
+                vscode.window.showInformationMessage('Waiting for Copilot to generate alternative functions...');
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                
+                // Type the second query
+                const secondQuery = "can you now use benny to test the three functions.";
+                await vscode.env.clipboard.writeText(secondQuery);
+                await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+                outputChannel.appendLine('Typed second query');
+                
+                // Try the submit commands again for the second query
+                for (const cmd of submitCommands) {
+                    try {
+                        if (cmd === 'workbench.action.terminal.sendSequence') {
+                            // Special case for terminal sequence
+                            await vscode.commands.executeCommand(cmd, { text: '\u000D' }); // Carriage return
+                        } else {
+                            await vscode.commands.executeCommand(cmd);
+                        }
+                        outputChannel.appendLine(`Tried submit command for second query: ${cmd}`);
+                    } catch (submitError) {
+                        outputChannel.appendLine(`Submit command failed for second query: ${cmd} - ${submitError}`);
+                    }
+                    
+                    // Small delay between attempts
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+                
+                // Press Enter key directly as a last resort
+                try {
+                    await vscode.commands.executeCommand('type', { text: '\n' });
+                    outputChannel.appendLine('Tried direct Enter key for second query');
+                } catch (typeError) {
+                    outputChannel.appendLine(`Type command failed for second query: ${typeError}`);
+                }
+                
+                outputChannel.appendLine('Tried to submit second query');
+                
+                // Final instructions
                 vscode.window.showInformationMessage(
-                    'Now type: "can you create two alternative functions for this?" and press Enter. ' +
-                    'After getting the response, ask "can you now use benny to test the three functions."'
+                    'PerfCopilot has asked Copilot Chat to analyze your function and provide benchmarks. ' +
+                    'Please wait for the complete response in the Copilot Chat panel.'
                 );
             } catch (error) {
                 outputChannel.appendLine(`Error opening Copilot Chat: ${error}`);
