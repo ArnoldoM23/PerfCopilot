@@ -283,55 +283,137 @@ async function getCopilotSuggestion(document: vscode.TextDocument, _line: number
         outputChannel.appendLine(documentText.substring(0, 500) + '...');
     }
 
-    // Try to use Copilot's direct API if available
+    // Try direct Copilot exports method first
+    outputChannel.appendLine('Attempting to use Copilot exports method...');
     try {
         if (copilot.exports && typeof copilot.exports.getCompletions === 'function') {
             outputChannel.appendLine('Using Copilot exports.getCompletions');
             
-            // Create a temporary document with our instructions
-            const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
-            const tempDoc = await vscode.workspace.openTextDocument(tempUri);
-            const edit = new vscode.WorkspaceEdit();
-            edit.insert(tempUri, new vscode.Position(0, 0), documentText);
-            await vscode.workspace.applyEdit(edit);
-            
-            // Get completions from the temp document
-            const completions = await copilot.exports.getCompletions(tempDoc, new vscode.Position(tempDoc.lineCount - 1, 0), {});
-            
-            // Close the temp document
-            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+            // Don't create a temporary document for this method
+            const completions = await copilot.exports.getCompletions(document, new vscode.Position(document.lineCount - 1, 0), {});
             
             if (completions && completions.length > 0) {
                 const completion = completions[0] || '';
                 outputChannel.appendLine(`Received completion from Copilot exports: ${completion.substring(0, 100)}...`);
                 return completion;
+            } else {
+                outputChannel.appendLine('No completions returned from Copilot exports');
             }
+        } else {
+            outputChannel.appendLine('Copilot exports.getCompletions not available');
         }
     } catch (e: any) {
         outputChannel.appendLine(`Error using Copilot exports: ${e.message}`);
-        // Fall back to the standard method
     }
-
-    // Standard method as fallback
+    
+    // Fall back to standard method with timeout protection
+    outputChannel.appendLine('Falling back to standard method');
+    
+    let tempDoc: vscode.TextDocument | undefined;
+    let editor: vscode.TextEditor | undefined;
+    
     try {
+        // Polyfill for AbortController if needed
+        function getAbortController() {
+            // If AbortController is available in the global scope, use it
+            if (typeof AbortController !== 'undefined') {
+                return new AbortController();
+            }
+            
+            // Simple polyfill for AbortController
+            const listeners: Array<() => void> = [];
+            const signal = {
+                aborted: false,
+                addEventListener: (type: string, listener: () => void) => {
+                    if (type === 'abort') {
+                        listeners.push(listener);
+                    }
+                },
+                removeEventListener: (type: string, listener: () => void) => {
+                    if (type === 'abort') {
+                        const index = listeners.indexOf(listener);
+                        if (index !== -1) {
+                            listeners.splice(index, 1);
+                        }
+                    }
+                }
+            };
+            
+            return {
+                signal,
+                abort: () => {
+                    // Mark as aborted and call listeners
+                    signal.aborted = true;
+                    listeners.forEach(listener => listener());
+                }
+            };
+        }
+
+        // Try to create an abort controller for timeout protection
+        let abortController;
+        try {
+            abortController = getAbortController();
+        } catch (e) {
+            outputChannel.appendLine(`Error creating AbortController: ${e}`);
+            // Continue without abort capabilities
+            abortController = {
+                signal: { aborted: false, addEventListener: () => {} },
+                abort: () => {}
+            };
+        }
+
+        const signal = abortController.signal;
+        const timeout = setTimeout(() => {
+            outputChannel.appendLine('Operation timed out, aborting');
+            abortController.abort();
+        }, 10000); // 10 second timeout
+        
         // Create a temporary document with our instructions
         const tempUri = vscode.Uri.parse(`untitled:${Math.random().toString(36).substring(2)}.js`);
-        const tempDoc = await vscode.workspace.openTextDocument(tempUri);
+        tempDoc = await vscode.workspace.openTextDocument(tempUri);
+        
+        // Apply the document edit
         const edit = new vscode.WorkspaceEdit();
         edit.insert(tempUri, new vscode.Position(0, 0), documentText);
         await vscode.workspace.applyEdit(edit);
         
-        // Open the document and position at the end
-        const editor = await vscode.window.showTextDocument(tempDoc);
-        editor.selection = new vscode.Selection(
-            new vscode.Position(tempDoc.lineCount - 1, 0),
-            new vscode.Position(tempDoc.lineCount - 1, 0)
-        );
+        // Show the document
+        editor = await vscode.window.showTextDocument(tempDoc, {
+            preview: true,
+            viewColumn: vscode.ViewColumn.Beside
+        });
         
-        // Trigger suggest and wait for completions
+        // Position cursor at the end
+        if (editor) {
+            editor.selection = new vscode.Selection(
+                new vscode.Position(tempDoc.lineCount - 1, 0),
+                new vscode.Position(tempDoc.lineCount - 1, 0)
+            );
+        }
+        
+        // Trigger the suggestion
+        outputChannel.appendLine('Triggering Copilot suggestion');
         await vscode.commands.executeCommand('editor.action.triggerSuggest');
-        await new Promise(resolve => setTimeout(resolve, 3000)); // Increased wait time
         
+        // Wait for suggestions
+        outputChannel.appendLine('Waiting for suggestions...');
+        await new Promise((resolve, reject) => {
+            const waitTime = setTimeout(() => {
+                resolve(undefined);
+            }, 5000);
+            
+            if (signal.aborted) {
+                clearTimeout(waitTime);
+                reject(new Error('Operation aborted'));
+            }
+            
+            signal.addEventListener('abort', () => {
+                clearTimeout(waitTime);
+                reject(new Error('Operation aborted'));
+            });
+        });
+        
+        // Get completions
         const suggestions = await vscode.commands.executeCommand<vscode.CompletionList>(
             'vscode.executeCompletionItemProvider',
             tempDoc.uri,
@@ -340,17 +422,28 @@ async function getCopilotSuggestion(document: vscode.TextDocument, _line: number
             50
         );
         
-        // Close the temp document
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        // Clear the timeout
+        clearTimeout(timeout);
         
+        // Process results
         if (!suggestions?.items.length) {
+            outputChannel.appendLine('No suggestions received from Copilot');
             throw new Error('No suggestions received from Copilot');
         }
         
-        return suggestions.items[0].insertText?.toString() || '';
+        const result = suggestions.items[0].insertText?.toString() || '';
+        outputChannel.appendLine(`Received suggestion: ${result.substring(0, 100)}...`);
+        
+        return result;
     } catch (e: any) {
         outputChannel.appendLine(`Error with standard method: ${e.message}`);
-        throw e;
+        throw new Error(`Error getting Copilot suggestion: ${e.message}`);
+    } finally {
+        // Always ensure we clean up
+        if (editor) {
+            outputChannel.appendLine('Closing temporary document editor');
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
     }
 }
 
