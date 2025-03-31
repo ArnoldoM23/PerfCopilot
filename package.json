@@ -75,6 +75,10 @@
     "@types/benchmark": "^2.1.5"
   },
   "dependencies": {
-    "benny": "^3.7.1"
-  }
+    "benny": "^3.7.1",
+    "@github/copilot-node": "^1.0.0"
+  },
+  "extensionDependencies": [
+    "GitHub.copilot"
+  ]
 }
