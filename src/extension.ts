@@ -171,309 +171,126 @@ Do NOT attempt to execute the code. Simply provide theoretical analysis based on
  * Gets a performance analysis from GitHub Copilot
  */
 async function getCopilotAnalysis(promptText: string, originalFunction: string): Promise<string> {
-    const copilot = vscode.extensions.getExtension('GitHub.copilot');
-    if (!copilot) {
-        outputChannel.appendLine('GitHub Copilot extension not found');
-        throw new Error('GitHub Copilot extension is required for PerfCopilot to work');
-    }
-
-    outputChannel.appendLine(`GitHub Copilot extension found: id=${copilot.id}, version=${copilot.packageJSON.version}`);
+    // Log that we're starting the analysis
+    outputChannel.appendLine('Starting function analysis with Copilot...');
     
-    if (!copilot.isActive) {
-        outputChannel.appendLine('Activating GitHub Copilot extension...');
-        await copilot.activate();
-        outputChannel.appendLine('GitHub Copilot extension activated');
-    } else {
-        outputChannel.appendLine('GitHub Copilot extension is already active');
-    }
-    
-    // First check if we have a direct path to the Copilot API
-    outputChannel.appendLine('Exploring available Copilot APIs...');
-    outputChannel.appendLine(`Copilot export keys: ${Object.keys(copilot.exports || {}).join(', ')}`);
-    
-    // First try to use Copilot Chat if available
     try {
-        const copilotChat = vscode.extensions.getExtension('GitHub.copilot-chat');
+        // Create a new untitled JavaScript document with our prompt
+        const doc = await vscode.workspace.openTextDocument({ 
+            content: promptText,
+            language: 'javascript'
+        });
         
-        if (copilotChat) {
-            outputChannel.appendLine(`Copilot Chat found: id=${copilotChat.id}, version=${copilotChat.packageJSON.version}`);
+        // We need to show the document to get completions
+        const editor = await vscode.window.showTextDocument(doc, { 
+            viewColumn: vscode.ViewColumn.One,
+            preview: true
+        });
+        
+        // Position cursor at the end of the document
+        const endPosition = new vscode.Position(doc.lineCount - 1, doc.lineAt(doc.lineCount - 1).text.length);
+        editor.selection = new vscode.Selection(endPosition, endPosition);
+        
+        // Wait a moment for Copilot to initialize with the document
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        outputChannel.appendLine('Requesting Copilot completions...');
+        
+        // Directly trigger the inline completion provider
+        const inlineCompletions = await vscode.commands.executeCommand<vscode.InlineCompletionList>(
+            'editor.action.inlineSuggest.trigger'
+        );
+        
+        // Wait for Copilot to provide suggestions
+        let attempts = 0;
+        let completion = '';
+        
+        while (attempts < 5) {
+            attempts++;
+            outputChannel.appendLine(`Waiting for Copilot completions (attempt ${attempts}/5)...`);
             
-            if (!copilotChat.isActive) {
-                outputChannel.appendLine('Activating GitHub Copilot Chat extension...');
-                await copilotChat.activate();
-                outputChannel.appendLine('GitHub Copilot Chat extension activated');
-            } else {
-                outputChannel.appendLine('GitHub Copilot Chat extension is already active');
+            // Try to get the current inline suggestion
+            try {
+                // Accept the inline suggestion if available
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
+                
+                // Get the updated document text
+                const newText = doc.getText();
+                const originalPromptLength = promptText.length;
+                
+                // If we have more text than our original prompt, we got a completion
+                if (newText.length > originalPromptLength) {
+                    completion = newText.substring(originalPromptLength);
+                    outputChannel.appendLine(`Received completion from Copilot (${completion.length} chars)`);
+                    break;
+                }
+            } catch (e) {
+                outputChannel.appendLine(`Error accepting suggestion: ${e}`);
             }
             
-            outputChannel.appendLine(`Copilot Chat export keys: ${Object.keys(copilotChat.exports || {}).join(', ')}`);
-            
-            if (copilotChat.isActive) {
-                outputChannel.appendLine('Using Copilot Chat for analysis...');
-                
-                // Construct a simple prompt for Copilot Chat
+            // Wait before trying again
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        // Close the document without saving
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        
+        // If we got a completion, return it
+        if (completion) {
+            return completion;
+        }
+        
+        // If we couldn't get a completion, try the Copilot Chat API as fallback
+        outputChannel.appendLine('Trying Copilot Chat as fallback...');
+        const copilotChat = vscode.extensions.getExtension('GitHub.copilot-chat');
+        
+        if (copilotChat && copilotChat.isActive) {
+            try {
                 const chatPrompt = `
-Analyze this JavaScript function and provide:
-1. Time and space complexity
-2. Explanation of algorithm 
-3. Possible optimizations
-4. 1-2 alternative implementations
-5. Theoretical benchmark comparison (do NOT execute any code)
+Analyze this JavaScript function and provide detailed time and space complexity analysis, algorithm explanation, and optimization suggestions:
 
-The function:
 \`\`\`javascript
 ${originalFunction}
 \`\`\`
 
-Include a "Benchmark Results:" section with a JSON object in this format:
-\`\`\`json
-{
-  "fastest": "functionName",
-  "results": [
-    {
-      "name": "original",
-      "ops": <estimated number>,
-      "margin": <estimated number>,
-      "percentSlower": <estimated number>
-    },
-    {
-      "name": "alternative1",
-      "ops": <estimated number>,
-      "margin": <estimated number>,
-      "percentSlower": <estimated number>
-    }
-  ]
-}
-\`\`\`
-
-IMPORTANT: Do NOT actually execute the code! Only provide theoretical analysis.
+Include a theoretical benchmark comparison of the original vs optimized versions.
 `;
+                // Try to send a message to Copilot Chat
+                await vscode.commands.executeCommand('github.copilot.chat.focus');
+                await vscode.commands.executeCommand('github.copilot.chat.newChat');
                 
-                // Check if Copilot Chat API is available
-                if (copilotChat.exports && typeof copilotChat.exports.createChatRequest === 'function') {
-                    outputChannel.appendLine('Using Copilot Chat API directly via createChatRequest');
-                    try {
-                        const response = await copilotChat.exports.createChatRequest(chatPrompt);
-                        if (response && response.content) {
-                            outputChannel.appendLine('Received response from Copilot Chat API');
-                            return response.content;
-                        } else {
-                            outputChannel.appendLine('No content in Copilot Chat response');
-                        }
-                    } catch (chatError: any) {
-                        outputChannel.appendLine(`Error using Copilot Chat createChatRequest: ${chatError.message}`);
-                    }
-                } else {
-                    outputChannel.appendLine('Copilot Chat createChatRequest API not available');
-                }
+                // Type in the prompt
+                await vscode.env.clipboard.writeText(chatPrompt);
+                await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
                 
-                // Try alternative chat APIs if available
-                if (copilotChat.exports && typeof copilotChat.exports.getChatAgent === 'function') {
-                    outputChannel.appendLine('Trying Copilot Chat API via getChatAgent');
-                    try {
-                        const agent = copilotChat.exports.getChatAgent();
-                        if (agent && typeof agent.sendMessage === 'function') {
-                            const response = await agent.sendMessage(chatPrompt);
-                            if (response && response.message) {
-                                outputChannel.appendLine('Received response from Copilot Chat agent');
-                                return response.message;
-                            } else {
-                                outputChannel.appendLine('No message in Copilot Chat agent response');
-                            }
-                        } else {
-                            outputChannel.appendLine('Copilot Chat agent sendMessage not available');
-                        }
-                    } catch (agentError: any) {
-                        outputChannel.appendLine(`Error using Copilot Chat agent: ${agentError.message}`);
-                    }
-                }
-            }
-        } else {
-            outputChannel.appendLine('GitHub Copilot Chat extension not found');
-        }
-    } catch (e: any) {
-        outputChannel.appendLine(`Error using Copilot Chat: ${e.message}`);
-        // Fall back to standard Copilot
-    }
+                // Send the message
+                await vscode.commands.executeCommand('github.copilot.chat.sendApiRequest');
+                
+                // Let the user know to look at the Copilot Chat panel
+                return `
+# Function Analysis via Copilot Chat
 
-    // Use the Copilot API directly
-    try {
-        outputChannel.appendLine('Trying standard Copilot APIs');
-        
-        // Try the new getInlineCompletions API first
-        if (copilot.exports && typeof copilot.exports.getInlineCompletions === 'function') {
-            outputChannel.appendLine('Using Copilot exports.getInlineCompletions');
-            
-            try {
-                // Create a completion directly using the API
-                const completions = await copilot.exports.getInlineCompletions(promptText);
-                
-                if (completions && completions.length > 0) {
-                    const completion = completions[0]?.text || '';
-                    if (completion) {
-                        outputChannel.appendLine(`Received completion from Copilot getInlineCompletions: ${completion.substring(0, 100)}...`);
-                        return completion;
-                    } else {
-                        outputChannel.appendLine('Empty text in completion from getInlineCompletions');
-                    }
-                } else {
-                    outputChannel.appendLine('No completions returned from getInlineCompletions');
-                }
-            } catch (inlineError: any) {
-                outputChannel.appendLine(`Error using getInlineCompletions: ${inlineError.message}`);
+The analysis of your function has been sent to the Copilot Chat panel. 
+Please check there for the detailed performance analysis.
+
+If the Copilot Chat panel is not visible:
+1. Open the Command Palette (Ctrl+Shift+P or Cmd+Shift+P)
+2. Type "GitHub Copilot: Open Chat View"
+3. View your analysis in the chat panel
+
+Function being analyzed:
+\`\`\`javascript
+${originalFunction}
+\`\`\`
+`;
+            } catch (chatError) {
+                outputChannel.appendLine(`Error using Copilot Chat: ${chatError}`);
             }
-        } else {
-            outputChannel.appendLine('getInlineCompletions API not available');
         }
         
-        // Try the older getCompletions API
-        if (copilot.exports && typeof copilot.exports.getCompletions === 'function') {
-            outputChannel.appendLine('Using Copilot exports.getCompletions');
-            
-            try {
-                // Mock document position for the API
-                const position = new vscode.Position(promptText.split('\n').length - 1, 0);
-                
-                // Get completions directly
-                const completions = await copilot.exports.getCompletions(
-                    { getText: () => promptText } as any, 
-                    position, 
-                    { maxResults: 1 }
-                );
-                
-                if (completions && completions.length > 0) {
-                    const completion = completions[0] || '';
-                    outputChannel.appendLine(`Received completion from Copilot getCompletions: ${completion.substring(0, 100)}...`);
-                    return completion;
-                } else {
-                    outputChannel.appendLine('No completions returned from getCompletions');
-                }
-            } catch (completionsError: any) {
-                outputChannel.appendLine(`Error using getCompletions: ${completionsError.message}`);
-            }
-        } else {
-            outputChannel.appendLine('getCompletions API not available');
-        }
-        
-        // Try using the completion provider API
-        if (copilot.exports && typeof copilot.exports.getCompletionProvider === 'function') {
-            outputChannel.appendLine('Using Copilot CompletionProvider');
-            
-            try {
-                const provider = copilot.exports.getCompletionProvider();
-                outputChannel.appendLine(`Provider methods: ${Object.keys(provider || {}).join(', ')}`);
-                
-                if (provider && typeof provider.provideInlineCompletions === 'function') {
-                    const mockDocument = {
-                        getText: () => promptText,
-                        getWordRangeAtPosition: () => undefined,
-                        lineAt: (line: number) => ({ 
-                            text: promptText.split('\n')[line] || '',
-                            lineNumber: line,
-                            range: new vscode.Range(line, 0, line, 0) 
-                        }),
-                        lineCount: promptText.split('\n').length,
-                        offsetAt: (pos: vscode.Position) => {
-                            const lines = promptText.split('\n');
-                            let offset = 0;
-                            for (let i = 0; i < pos.line; i++) {
-                                offset += lines[i].length + 1; // +1 for the newline
-                            }
-                            return offset + pos.character;
-                        },
-                        positionAt: (offset: number) => {
-                            const lines = promptText.split('\n');
-                            let pos = 0;
-                            let line = 0;
-                            let char = 0;
-                            
-                            while (line < lines.length && pos + lines[line].length < offset) {
-                                pos += lines[line].length + 1;
-                                line++;
-                            }
-                            
-                            char = offset - pos;
-                            return new vscode.Position(line, char);
-                        },
-                        uri: vscode.Uri.parse('untitled:temp.js'),
-                        version: 1
-                    };
-                    
-                    const completions = await provider.provideInlineCompletions(
-                        mockDocument as any, 
-                        new vscode.Position(mockDocument.lineCount - 1, 0),
-                        { triggerKind: 0, selectedCompletionInfo: undefined } as any, 
-                        { previousResponseId: undefined, selectedItems: [] } as any,
-                        new vscode.CancellationTokenSource().token
-                    );
-                    
-                    if (completions && completions.items && completions.items.length > 0) {
-                        const completion = completions.items[0].insertText.toString();
-                        outputChannel.appendLine(`Received completion from provider: ${completion.substring(0, 100)}...`);
-                        return completion;
-                    } else {
-                        outputChannel.appendLine('No completions returned from provider');
-                    }
-                } else {
-                    outputChannel.appendLine('Provider does not have provideInlineCompletions method');
-                }
-            } catch (providerError: any) {
-                outputChannel.appendLine(`Error using provider: ${providerError.message}`);
-            }
-        } else {
-            outputChannel.appendLine('getCompletionProvider API not available');
-        }
-        
-        // Last resort - try to get a direct completion through workspace API
-        outputChannel.appendLine('Trying direct workspace API approach');
-        
-        try {
-            // Create a temporary document and position to get completions
-            const doc = await vscode.workspace.openTextDocument({ 
-                content: promptText,
-                language: 'javascript'
-            });
-            
-            // Request completions from VS Code
-            const position = new vscode.Position(doc.lineCount - 1, 0);
-            
-            // Try to get completions through VS Code's completion provider
-            const completionList = await vscode.commands.executeCommand<vscode.CompletionList>(
-                'vscode.executeCompletionItemProvider',
-                doc.uri,
-                position
-            );
-            
-            if (completionList && completionList.items.length > 0) {
-                // Find the longest completion which is likely to be from Copilot
-                let bestCompletion = '';
-                for (const item of completionList.items) {
-                    const insertText = typeof item.insertText === 'string' 
-                        ? item.insertText 
-                        : item.insertText?.value || '';
-                    
-                    if (insertText.length > bestCompletion.length) {
-                        bestCompletion = insertText;
-                    }
-                }
-                
-                if (bestCompletion.length > 0) {
-                    outputChannel.appendLine(`Found completion via VS Code API: ${bestCompletion.substring(0, 100)}...`);
-                    return bestCompletion;
-                }
-            }
-            
-            outputChannel.appendLine('No suitable completions found via VS Code API');
-        } catch (wsError: any) {
-            outputChannel.appendLine(`Error using VS Code workspace API: ${wsError.message}`);
-        }
-        
-        outputChannel.appendLine('All Copilot API approaches failed');
-        
-        // If we've reached this point, all approaches have failed
-        // As a last resort, return a fallback message that explains we couldn't get
-        // a completion from Copilot but still provides some value to the user
-        return `# Function Analysis
+        // Return a fallback message
+        return `
+# Function Analysis
 
 Unfortunately, we couldn't get a proper analysis from GitHub Copilot at this time. Here's some general information about analyzing this type of function:
 
@@ -484,21 +301,19 @@ When analyzing a function like the one you've selected, consider:
 - How much additional memory is allocated
 
 ## Suggested Steps
-1. Check that you're properly authenticated with GitHub Copilot
-2. Try selecting the function again and running the analysis
-3. If the problem persists, view the logs using the "PerfCopilot: Show Logs" command
+1. Make sure you're signed in to GitHub Copilot
+2. Try using "GitHub Copilot Chat" directly instead with the prompt:
+   "Analyze this function's time and space complexity: [your function]"
+3. View the extension logs using the "PerfCopilot: Show Logs" command for more details
 
-## Benchmark Considerations
-When benchmarking JavaScript functions:
-- Consider input size and variety of test cases
-- Look for algorithmic improvements rather than micro-optimizations
-- Profile in the actual environment where the code will run
-
-Please try again later or check the extension logs for more details.`;
-        
-    } catch (e: any) {
-        outputChannel.appendLine(`Error using Copilot: ${e.message}`);
-        throw new Error(`GitHub Copilot error: ${e.message}. PerfCopilot requires GitHub Copilot to function correctly.`);
+## Function Being Analyzed
+\`\`\`javascript
+${originalFunction}
+\`\`\`
+`;
+    } catch (error: any) {
+        outputChannel.appendLine(`Error in analysis process: ${error.message}`);
+        throw new Error(`GitHub Copilot error: ${error.message}. PerfCopilot requires GitHub Copilot to function correctly.`);
     }
 }
 
