@@ -1,5 +1,12 @@
 import * as vscode from 'vscode';
 
+// Type definition for Copilot Chat API
+interface CopilotChatApi {
+    requestChatResponse: (prompt: string) => Promise<string>;
+    createChatRequest?: (prompt: string) => Promise<{ content: string }>;
+    createConversation?: () => Promise<{ sendMessage: (prompt: string) => Promise<{ response: string }> }>;
+}
+
 // The extension output channel
 const outputChannel = vscode.window.createOutputChannel('PerfCopilot');
 
@@ -43,6 +50,12 @@ export function activate(context: vscode.ExtensionContext) {
             // Set loading state
             panel.webview.html = getLoadingHtml();
             
+            // First check if Copilot is available
+            if (!await isCopilotAvailable()) {
+                panel.webview.html = getErrorHtml("GitHub Copilot is not available. Please install and sign in to GitHub Copilot or GitHub Copilot Chat extensions.");
+                return;
+            }
+            
             // First try to analyze the function
             const analysisPrompt = `
 I need you to analyze this JavaScript function and provide two alternative implementations that should be more efficient:
@@ -61,13 +74,16 @@ Format your response with clear code blocks for each implementation.
 `;
 
             try {
-                // Get the analysis from Copilot
-                const analysis = await getCopilotResponse(analysisPrompt);
+                // Get the analysis using requestChatResponse from the API
+                outputChannel.appendLine('Requesting function analysis from Copilot...');
+                const analysis = await requestCopilotChatResponse(analysisPrompt);
                 
                 if (!analysis) {
-                    panel.webview.html = getErrorHtml("Couldn't get a response from Copilot. Make sure GitHub Copilot is properly installed and signed in.");
+                    panel.webview.html = getErrorHtml("Couldn't get a response from Copilot API. Please try again or restart VS Code.");
                     return;
                 }
+                
+                outputChannel.appendLine('Analysis received from Copilot. Getting benchmark information...');
                 
                 // Now get benchmark information
                 const benchmarkPrompt = `
@@ -87,15 +103,16 @@ Please:
 Run the benchmark and show me the complete results.
 `;
 
-                const benchmarkResults = await getCopilotResponse(benchmarkPrompt);
+                const benchmarkResults = await requestCopilotChatResponse(benchmarkPrompt);
                 
                 // Combine the results and display them
                 const combinedAnalysis = analysis + "\n\n## Benchmark Results\n\n" + (benchmarkResults || "No benchmark results available.");
                 
                 panel.webview.html = getResultsHtml(combinedAnalysis);
+                outputChannel.appendLine('Analysis complete and displayed.');
             } catch (error: any) {
+                outputChannel.appendLine(`Error during Copilot analysis: ${error.message}`);
                 panel.webview.html = getErrorHtml(`Error: ${error.message}`);
-                throw error;
             }
         } catch (error: any) {
             vscode.window.showErrorMessage(`Error analyzing function: ${error.message || error}`);
@@ -113,97 +130,164 @@ Run the benchmark and show me the complete results.
 }
 
 /**
- * Get a response from GitHub Copilot
+ * Check if GitHub Copilot or Copilot Chat is available
  */
-async function getCopilotResponse(prompt: string): Promise<string | null> {
+async function isCopilotAvailable(): Promise<boolean> {
     try {
-        // Try Copilot Chat first
+        // Check for Copilot Chat extension
         const copilotChatExt = vscode.extensions.getExtension('GitHub.copilot-chat');
         if (copilotChatExt) {
-            // Ensure it's activated
+            outputChannel.appendLine('GitHub Copilot Chat extension found');
+            
             if (!copilotChatExt.isActive) {
+                outputChannel.appendLine('Activating GitHub Copilot Chat extension...');
                 await copilotChatExt.activate();
             }
             
-            // Access the Copilot Chat API
-            const copilotChatApi = copilotChatExt.exports;
+            const api = copilotChatExt.exports;
+            outputChannel.appendLine(`Copilot Chat API available methods: ${Object.keys(api || {}).join(', ')}`);
             
-            // Check if the API has the requestChatResponse method
-            if (copilotChatApi && copilotChatApi.requestChatResponse) {
-                outputChannel.appendLine('Using Copilot Chat API requestChatResponse method');
-                const response = await copilotChatApi.requestChatResponse(prompt);
-                if (response && typeof response === 'string') {
-                    return response;
+            if (api && (api.requestChatResponse || api.createChatRequest || api.createConversation)) {
+                return true;
+            }
+        }
+        
+        // Check for standard Copilot extension
+        const copilotExt = vscode.extensions.getExtension('GitHub.copilot');
+        if (copilotExt) {
+            outputChannel.appendLine('GitHub Copilot extension found');
+            
+            if (!copilotExt.isActive) {
+                outputChannel.appendLine('Activating GitHub Copilot extension...');
+                await copilotExt.activate();
+            }
+            
+            const api = copilotExt.exports;
+            outputChannel.appendLine(`Copilot API available methods: ${Object.keys(api || {}).join(', ')}`);
+            
+            return true;
+        }
+        
+        outputChannel.appendLine('Neither GitHub Copilot nor Copilot Chat extension found');
+        return false;
+    } catch (error: any) {
+        outputChannel.appendLine(`Error checking Copilot availability: ${error.message}`);
+        return false;
+    }
+}
+
+/**
+ * Request a response from Copilot Chat using available API methods
+ */
+async function requestCopilotChatResponse(prompt: string): Promise<string | null> {
+    try {
+        outputChannel.appendLine('Attempting to get response from Copilot Chat...');
+        
+        // Try Copilot Chat first
+        const copilotChatExt = vscode.extensions.getExtension('GitHub.copilot-chat');
+        if (copilotChatExt && copilotChatExt.isActive) {
+            const api = copilotChatExt.exports as CopilotChatApi;
+            
+            // Method 1: Direct requestChatResponse (from your example)
+            if (api.requestChatResponse) {
+                outputChannel.appendLine('Using requestChatResponse method');
+                try {
+                    const response = await api.requestChatResponse(prompt);
+                    if (response) {
+                        outputChannel.appendLine('Successfully received response from requestChatResponse');
+                        return response;
+                    }
+                } catch (error: any) {
+                    outputChannel.appendLine(`Error with requestChatResponse: ${error.message}`);
                 }
             }
             
-            // Try alternative method if available
-            if (copilotChatApi && copilotChatApi.createConversation) {
-                outputChannel.appendLine('Using Copilot Chat API createConversation method');
-                const conversation = await copilotChatApi.createConversation();
-                if (conversation && conversation.sendMessage) {
-                    const response = await conversation.sendMessage(prompt);
-                    if (response && typeof response === 'string') {
-                        return response;
-                    } else if (response && response.response && typeof response.response === 'string') {
-                        return response.response;
+            // Method 2: createChatRequest
+            if (api.createChatRequest) {
+                outputChannel.appendLine('Using createChatRequest method');
+                try {
+                    const response = await api.createChatRequest(prompt);
+                    if (response && response.content) {
+                        outputChannel.appendLine('Successfully received response from createChatRequest');
+                        return response.content;
                     }
+                } catch (error: any) {
+                    outputChannel.appendLine(`Error with createChatRequest: ${error.message}`);
+                }
+            }
+            
+            // Method 3: createConversation
+            if (api.createConversation) {
+                outputChannel.appendLine('Using createConversation method');
+                try {
+                    const conversation = await api.createConversation();
+                    if (conversation && conversation.sendMessage) {
+                        const response = await conversation.sendMessage(prompt);
+                        if (response && response.response) {
+                            outputChannel.appendLine('Successfully received response from createConversation');
+                            return response.response;
+                        }
+                    }
+                } catch (error: any) {
+                    outputChannel.appendLine(`Error with createConversation: ${error.message}`);
                 }
             }
         }
         
         // Try standard Copilot as a fallback
         const copilotExt = vscode.extensions.getExtension('GitHub.copilot');
-        if (copilotExt) {
-            // Ensure it's activated
-            if (!copilotExt.isActive) {
-                await copilotExt.activate();
-            }
+        if (copilotExt && copilotExt.isActive) {
+            outputChannel.appendLine('Falling back to standard Copilot...');
             
-            // Check if the VS Code API provides languageModels directly
-            const vscodeWithApi = vscode as any;
-            if (vscodeWithApi.languageModels && vscodeWithApi.languageModels.generateText) {
-                outputChannel.appendLine('Using VS Code languageModels API');
-                const response = await vscodeWithApi.languageModels.generateText(prompt);
-                if (response) {
-                    return response;
-                }
-            }
-            
-            // Use Copilot extension API
-            const copilotApi = copilotExt.exports;
-            
-            // Try any available API methods
-            if (copilotApi) {
-                outputChannel.appendLine(`Available Copilot APIs: ${Object.keys(copilotApi).join(', ')}`);
+            // Last resort: use inline suggestions without UI
+            try {
+                outputChannel.appendLine('Using untitled document method');
                 
-                // Option 1: Check for getCompletions or similar methods
-                if (copilotApi.getCompletions) {
-                    outputChannel.appendLine('Using Copilot getCompletions API');
-                    // Create a simple document to get completions for
-                    const document = {
-                        getText: () => prompt,
-                        offsetAt: (_: any) => prompt.length,
-                        positionAt: (_: any) => new vscode.Position(0, 0),
-                        lineAt: (_: any) => ({ text: prompt })
-                    };
-                    
-                    const position = new vscode.Position(0, 0);
-                    const completions = await copilotApi.getCompletions(document, position, {});
-                    
-                    if (completions && completions.length > 0) {
-                        return completions[0].displayText || completions[0].text || null;
-                    }
+                // Create a temporary document
+                const document = await vscode.workspace.openTextDocument({
+                    language: 'markdown',
+                    content: prompt
+                });
+                
+                // Show the document temporarily
+                const editor = await vscode.window.showTextDocument(document, { preview: true, viewColumn: vscode.ViewColumn.One });
+                
+                // Position cursor at the end
+                const position = new vscode.Position(document.lineCount - 1, document.lineAt(document.lineCount - 1).text.length);
+                editor.selection = new vscode.Selection(position, position);
+                
+                // Wait for Copilot to initialize
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Trigger inline suggestions
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+                
+                // Wait for suggestions to appear and accept
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                await vscode.commands.executeCommand('editor.action.inlineSuggest.accept');
+                
+                // Get the completion
+                const newText = document.getText();
+                const completion = newText.substring(prompt.length);
+                
+                // Close without saving
+                await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                
+                if (completion && completion.trim().length > 0) {
+                    outputChannel.appendLine('Successfully received inline suggestion');
+                    return completion;
                 }
+            } catch (error: any) {
+                outputChannel.appendLine(`Error with inline suggestions: ${error.message}`);
             }
         }
         
-        // If we get here, we couldn't get a response
-        outputChannel.appendLine('No Copilot API method succeeded');
+        // If all methods failed, return null
+        outputChannel.appendLine('All methods to get a Copilot response failed');
         return null;
     } catch (error: any) {
-        outputChannel.appendLine(`Error using Copilot: ${error.message}`);
-        throw new Error(`Failed to get Copilot response: ${error.message}`);
+        outputChannel.appendLine(`Error requesting Copilot response: ${error.message}`);
+        return null;
     }
 }
 
@@ -281,6 +365,7 @@ function getErrorHtml(errorMessage: string): string {
                 <p>${escapeHtml(errorMessage)}</p>
             </div>
             <p>Please make sure GitHub Copilot is properly installed and try again.</p>
+            <button onclick="window.location.reload()">Try Again</button>
         </div>
     </body>
     </html>`;
