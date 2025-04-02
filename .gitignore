@@ -16,4 +16,32 @@ yarn-error.log*
 
 # Misc
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# VS Code
+.vscode
+
+# Yarn
+yarn.lock
+
+# Package lock
+package-lock.json
+
+# Coverage
+coverage/
+
+# NYC output
+.nyc_output/
+
+# TGZ
+*.tgz
+
+# IDEA
+.idea/
+*.iml
+
+# History
+.history/
+
+# Temp
+tmp/ 

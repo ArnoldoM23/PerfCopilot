@@ -279,6 +279,12 @@ const mockVscode = {
             return undefined;
         })
     },
+    env: {
+        clipboard: {
+            writeText: jest.fn().mockResolvedValue(undefined),
+            readText: jest.fn().mockResolvedValue('function test() { return 1; }')
+        }
+    },
     ExtensionMode: { Test: 1 },
     ViewColumn: { One: 1 }
 };

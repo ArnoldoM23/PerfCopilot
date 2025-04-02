@@ -75,14 +75,14 @@ describe('PerfCopilot Extension', () => {
   
   // Access the VS Code mock
   const vscode = require('vscode');
-  
-  beforeEach(() => {
+
+    beforeEach(() => {
     // Reset all mocks before each test
-    jest.clearAllMocks();
-    
+        jest.clearAllMocks();
+        
     // Set up default active editor
-    vscode.window.activeTextEditor = {
-      document: {
+        vscode.window.activeTextEditor = {
+            document: {
         getText: jest.fn().mockImplementation((_selection: any) => 'function test() { return 1; }')
       },
       selection: {}
@@ -118,20 +118,20 @@ describe('PerfCopilot Extension', () => {
     
     it('should register the analyzeFunction command', async () => {
       await activate(mockContext);
-      expect(vscode.commands.registerCommand).toHaveBeenCalledWith(
-        'perfcopilot.analyzeFunction',
-        expect.any(Function)
-      );
+        expect(vscode.commands.registerCommand).toHaveBeenCalledWith(
+            'perfcopilot.analyzeFunction',
+            expect.any(Function)
+        );
     });
-    
+
     it('should register the showLogs command', async () => {
       await activate(mockContext);
       expect(vscode.commands.registerCommand).toHaveBeenCalledWith(
         'perfcopilot.showLogs',
         expect.any(Function)
-      );
+        );
     });
-    
+
     it('should handle errors when registering the chat participant', async () => {
       // Force an error when creating the participant
       (PerfCopilotParticipant as jest.Mock).mockImplementationOnce(() => {

@@ -1,9 +1,9 @@
 {
   "name": "perfcopilot",
   "displayName": "PerfCopilot",
-  "description": "AI-powered JavaScript function performance analyzer for VS Code",
-  "version": "0.0.1",
-  "publisher": "ArnoldoM23",
+  "description": "Analyze JavaScript/TypeScript functions for performance improvements using GitHub Copilot",
+  "version": "0.1.0",
+  "publisher": "example",
   "private": false,
   "license": "MIT",
   "icon": "assets/logo.png",
@@ -27,18 +27,15 @@
   },
   "categories": [
     "Other",
-    "Programming Languages",
-    "Snippets"
+    "Programming Languages"
   ],
-  "activationEvents": [
-    "onCommand:perfcopilot.analyzeFunction"
-  ],
+  "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "perfcopilot.analyzeFunction",
-        "title": "Analyze Function Performance"
+        "title": "PerfCopilot: Analyze Function"
       },
       {
         "command": "perfcopilot.showLogs",
@@ -48,9 +45,9 @@
     "menus": {
       "editor/context": [
         {
+          "when": "editorHasSelection && (editorLangId == 'javascript' || editorLangId == 'typescript')",
           "command": "perfcopilot.analyzeFunction",
-          "when": "editorHasSelection",
-          "group": "navigation"
+          "group": "perfcopilot"
         }
       ]
     }
@@ -62,29 +59,39 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "jest",
+    "test:functions": "jest src/__tests__/functions.test.ts",
+    "test:services": "jest src/__tests__/benchmarkService.test.ts src/__tests__/copilotChatService.test.ts",
+    "test:extension": "jest src/__tests__/extension.test.ts",
+    "test:benchmark": "jest src/__tests__/benchmarkCode.test.ts",
+    "test:all": "npm run compile && jest --verbose",
+    "test:ci": "jest --ci --reporters=default --reporters=jest-junit",
+    "test:run": "node scripts/run-tests.js",
     "package": "vsce package",
-    "publish": "vsce publish"
+    "publish": "vsce publish",
+    "build": "npm run compile && npm run package",
+    "dev": "npm run compile && npm run watch"
   },
   "devDependencies": {
-    "@types/benchmark": "^2.1.5",
-    "@types/jest": "^29.5.14",
+    "@types/glob": "^8.1.0",
+    "@types/jest": "^29.5.3",
+    "@types/mocha": "^10.0.3",
     "@types/node": "18.x",
-    "@types/sinon": "^17.0.4",
     "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^6.21.0",
-    "@typescript-eslint/parser": "^6.21.0",
-    "@vscode/test-utils": "^0.3.5",
-    "@vscode/vsce": "^2.24.0",
-    "eslint": "^8.54.0",
-    "jest": "^29.7.0",
-    "sinon": "^20.0.0",
-    "ts-jest": "^29.3.0",
-    "typescript": "^5.3.2"
+    "@typescript-eslint/eslint-plugin": "^6.8.0",
+    "@typescript-eslint/parser": "^6.8.0",
+    "@vscode/test-electron": "^2.3.4",
+    "@vscode/vsce": "^2.23.0",
+    "eslint": "^8.52.0",
+    "glob": "^10.3.10",
+    "jest": "^29.5.0",
+    "mocha": "^10.2.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.2.2"
   },
   "dependencies": {
     "benny": "^3.7.1"
   },
   "extensionDependencies": [
-    "GitHub.copilot"
+    "GitHub.copilot-chat"
   ]
 }
