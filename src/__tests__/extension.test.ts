@@ -67,6 +67,15 @@ import { CopilotChatService } from '../services/copilotChatService';
 import { BenchmarkService } from '../services/benchmarkService';
 import { PerfCopilotParticipant } from '../perfCopilotParticipant';
 
+// Add mock for clipboard API
+mockVscode.env = {
+  ...mockVscode.env,
+  clipboard: {
+    readText: jest.fn().mockResolvedValue(''),
+    writeText: jest.fn().mockResolvedValue(undefined)
+  }
+};
+
 describe('PerfCopilot Extension', () => {
   // Mock context for extension activation
   const mockContext: any = {
