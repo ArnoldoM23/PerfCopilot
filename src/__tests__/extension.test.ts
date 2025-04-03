@@ -176,7 +176,7 @@ describe('PerfCopilot Extension', () => {
       const handlerPromise = analyzeCommandHandler();
       
       // Verify error is shown
-      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('No active editor found');
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('No active text editor found.');
       
       // Since we're not checking full execution, we don't need to await the promise
       // Just make sure it exists
@@ -200,7 +200,7 @@ describe('PerfCopilot Extension', () => {
       const handlerPromise = analyzeCommandHandler();
       
       // Verify error is shown
-      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('No function selected');
+      expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('No function selected. Please select the code of the function you want to analyze.');
       
       // Since we're not checking full execution, we don't need to await the promise
       // Just make sure it exists

@@ -107,12 +107,16 @@ export class PerfCopilotParticipant {
                     return { metadata: { error: `Language model selection error: ${lmError}` } };
                 }
 
-                if (token.isCancellationRequested) {return {};}
+                if (token.isCancellationRequested) {
+                    response.markdown("Operation cancelled by user.");
+                    return {};
+                }
 
                 response.progress('Extracting function...');
                 const functionCode = this.extractFunctionCodeFromPrompt(request.prompt);
+
                 if (!functionCode) {
-                    response.markdown(`🔴 **Error:** No valid JavaScript/TypeScript function found in your request. 
+                    response.markdown(`🔴 **Error:** No JavaScript/TypeScript function found in your request. 
 Please provide the function code directly or within a code block (\`\`\`js ... \`\`\`).
 
 **Example:**
@@ -127,20 +131,28 @@ function calculateSum(arr) {
 }
 \`\`\`
 `);
-                    return { metadata: { error: 'No valid function code found in prompt.' } };
+                    return { metadata: { error: 'No function code extracted from prompt.' } };
                 }
 
                 if (!isValidJavaScriptFunction(functionCode)) {
-                     response.markdown(`🔴 **Error:** The provided code does not appear to be a valid JavaScript/TypeScript function. 
-Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \`const name = (...) => {...}\`).`);
-                    return { metadata: { error: 'Invalid function code provided.' } };
+                     response.markdown(`🔴 **Error:** The extracted code does not appear to be a valid JavaScript/TypeScript function. 
+Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \`const name = (...) => {...}\`).
+
+**Extracted Code:**
+\`\`\`javascript
+${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`\`
+`);
+                    return { metadata: { error: 'Invalid function code extracted.' } };
                 }
 
                  const functionName = extractFunctionName(functionCode) || 'anonymous function';
                  const originalFunction: FunctionImplementation = { name: 'Original', code: functionCode, description: 'Original implementation' };
                  response.markdown(`✅ Function \`${functionName}\` identified. Analyzing...`);
 
-                if (token.isCancellationRequested) {return {};}
+                if (token.isCancellationRequested) {
+                    response.markdown("Operation cancelled by user.");
+                    return {};
+                }
 
                 response.progress('Generating alternative implementations...');
                 const alternativesPrompt = this.createAlternativesPrompt(functionCode);
@@ -150,10 +162,16 @@ Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \
                 try {
                     const alternativesRequest = await languageModel.sendRequest(alternativesMessages, {}, token);
                     for await (const chunk of alternativesRequest.text) {
-                        if (token.isCancellationRequested) {break;}
+                        if (token.isCancellationRequested) {
+                            response.markdown("Operation cancelled by user.");
+                            break;
+                        }
                         alternativesResponseText += chunk;
                     }
-                    if (token.isCancellationRequested) {return {};}
+                    if (token.isCancellationRequested) {
+                        response.markdown("Operation cancelled by user.");
+                        return {};
+                    }
                     this.outputChannel.appendLine(`Received alternatives response length: ${alternativesResponseText.length}`);
                     this.outputChannel.appendLine(`\n--- Alternatives Raw Response ---\n${alternativesResponseText}\n-------------------------------\n`);
 
@@ -171,7 +189,10 @@ Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \
                 }
                  response.markdown(`✅ Generated ${alternatives.length} alternative implementations.`);
 
-                 if (token.isCancellationRequested) {return {};}
+                 if (token.isCancellationRequested) {
+                    response.markdown("Operation cancelled by user.");
+                    return {};
+                 }
 
                 response.progress('Generating benchmark code via AI...');
                 let benchmarkCode: string | undefined;
@@ -182,7 +203,10 @@ Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \
                     const benchmarkRequest = await languageModel.sendRequest(benchmarkMessages, {}, token);
 
                     for await (const chunk of benchmarkRequest.text) {
-                        if (token.isCancellationRequested) { break; }
+                        if (token.isCancellationRequested) {
+                            response.markdown("Operation cancelled by user.");
+                            break;
+                        }
                         benchmarkResponseText += chunk;
                     }
                     if (token.isCancellationRequested) { return {}; }
@@ -225,7 +249,10 @@ Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \
                     return { metadata: { error: `Benchmark execution error: ${error}` } };
                 }
 
-                if (token.isCancellationRequested) {return {};}
+                if (token.isCancellationRequested) {
+                    response.markdown("Operation cancelled by user.");
+                    return {};
+                }
 
                 response.progress('Analyzing benchmark results with AI...');
                 const explanationPrompt = this.createExplanationPrompt(originalFunction, alternatives, benchmarkResults);
@@ -234,7 +261,10 @@ Please ensure it has a correct structure (e.g., \`function name(...){...}\` or \
                 try {
                     const explanationRequest = await languageModel.sendRequest(explanationMessages, {}, token);
                     for await (const chunk of explanationRequest.text) {
-                         if (token.isCancellationRequested) {break;}
+                         if (token.isCancellationRequested) {
+                            response.markdown("Operation cancelled by user.");
+                            break;
+                         }
                          response.markdown(chunk);
                     }
                      if (token.isCancellationRequested) {return {};}
@@ -366,8 +396,10 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
             let functionCode = impl.code;
              const originalNameMatch = impl.code.match(/(?:function|const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)/);
              if (originalNameMatch && originalNameMatch[1]) {
-                 // Basic replacement, might not cover all function declaration styles perfectly
-                 functionCode = impl.code.replace(originalNameMatch[1], scriptFunctionName);
+                 const originalFunctionName = originalNameMatch[1];
+                 // Use a regex to replace all occurrences of the function name as a whole word
+                 const replaceRegex = new RegExp(`\\b${originalFunctionName}\\b`, 'g');
+                 functionCode = impl.code.replace(replaceRegex, scriptFunctionName);
              } else if (impl.code.match(/^\s*async\s*function/)) {
                  // Handle async function case if needed
              } else if (impl.code.match(/^\s*\(.*\)\s*=>/) || impl.code.match(/^\s*async\s*\(.*\)\s*=>/)) {
@@ -501,33 +533,58 @@ Generate the complete benchmark script now based on the provided functions.
     }
 
     /**
-     * Extracts function code from a chat prompt (improved).
+     * Extracts function code from a chat prompt (revised approach).
+     * Focuses on finding code blocks first, validation happens later.
      */
     private extractFunctionCodeFromPrompt(prompt: string): string | undefined {
+        this.outputChannel.appendLine(`[extractFunctionCodeFromPrompt] Received prompt (first 100 chars): ${prompt.substring(0, 100)}`);
         const cleanPrompt = prompt.replace(/^@perfcopilot\s*/i, '').trim();
+        this.outputChannel.appendLine(`[extractFunctionCodeFromPrompt] Cleaned prompt (first 100 chars): ${cleanPrompt.substring(0, 100)}`);
 
-        const codeBlockRegex = /```(?:javascript|js|typescript|ts)\s*([\s\S]*?)```/g;
-        let match = codeBlockRegex.exec(cleanPrompt);
-        if (match && match[1] && isValidJavaScriptFunction(match[1].trim())) {
-            this.outputChannel.appendLine('Extracted function from explicit JS/TS code block.');
-            return match[1].trim();
+        // Regex to find all code blocks (captures language tag and content)
+        const codeBlockRegex = /```(?:(javascript|js|typescript|ts)\s*)?([\s\S]*?)```/g;
+        let match;
+        const jsTsBlocks: string[] = [];
+        const genericBlocks: string[] = [];
+
+        this.outputChannel.appendLine(`[extractFunctionCodeFromPrompt] Searching for code blocks...`);
+        while ((match = codeBlockRegex.exec(cleanPrompt)) !== null) {
+            const language = match[1];
+            const code = match[2]?.trim();
+            if (!code) {continue;}
+
+            if (language) {
+                jsTsBlocks.push(code);
+            } else {
+                genericBlocks.push(code);
+            }
         }
-        codeBlockRegex.lastIndex = 0;
 
-         const genericCodeBlockRegex = /```\s*([\s\S]*?)```/g;
-         match = genericCodeBlockRegex.exec(cleanPrompt);
-         if (match && match[1] && isValidJavaScriptFunction(match[1].trim())) {
-             this.outputChannel.appendLine('Extracted function from generic code block.');
-             return match[1].trim();
-         }
-         genericCodeBlockRegex.lastIndex = 0;
+        this.outputChannel.appendLine(`[extractFunctionCodeFromPrompt] Found ${jsTsBlocks.length} JS/TS blocks and ${genericBlocks.length} generic blocks.`);
 
+        // 1. Return the *first* JS/TS block found (no validation here)
+        if (jsTsBlocks.length > 0) {
+            this.outputChannel.appendLine('[extractFunctionCodeFromPrompt] Path 1: Returning first JS/TS code block.');
+            return jsTsBlocks[0];
+        }
+
+        // 2. Return the *first* generic block if no JS/TS block found (no validation here)
+        if (genericBlocks.length > 0) {
+            this.outputChannel.appendLine('[extractFunctionCodeFromPrompt] Path 2: Returning first generic code block.');
+            return genericBlocks[0];
+        }
+
+        // 3. If no code blocks, check if the *entire* prompt is a valid function
+        this.outputChannel.appendLine(`[extractFunctionCodeFromPrompt] Path 3: No code blocks found. Checking if entire clean prompt is valid.`);
+        const isEntirePromptValid = isValidJavaScriptFunction(cleanPrompt);
+        this.outputChannel.appendLine(`[extractFunctionCodeFromPrompt] isValidJavaScriptFunction(cleanPrompt) returned: ${isEntirePromptValid}`);
         if (isValidJavaScriptFunction(cleanPrompt)) {
-            this.outputChannel.appendLine('Using the entire prompt as function code.');
+            this.outputChannel.appendLine('[extractFunctionCodeFromPrompt] Path 3a: Entire prompt is valid. Returning clean prompt.');
             return cleanPrompt;
         }
 
-        this.outputChannel.appendLine('Could not extract a valid function from the prompt.');
+        // 4. Otherwise, no function found
+        this.outputChannel.appendLine('[extractFunctionCodeFromPrompt] Path 4: No function found in blocks or raw prompt. Returning undefined.');
         return undefined;
     }
 } 

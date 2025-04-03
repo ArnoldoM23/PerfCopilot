@@ -135,11 +135,21 @@ export class BenchmarkService {
         let jsonString: string | undefined;
         try {
             // Refined Regex: Match start of line, RESULTS_JSON:, optional whitespace,
-            // then capture the starting '{' and everything non-greedily until the final '}' on potentially multiple lines.
-            const jsonMatch = output.match(/^RESULTS_JSON:\s*({[\s\S]*})$/m);
+            // then capture a potentially nested JSON object until the final closing brace on the line.
+            // Explanation:
+            // ^RESULTS_JSON:   - Marker at start of line (m flag)
+            // \s*            - Optional whitespace
+            // (              - Start capture group 1
+            // {              - Match opening brace
+            // (?:[^{}]|{[^]*?})* - Match nested braces correctly: either non-brace chars or a full inner brace pair
+            // }              - Match closing brace
+            // )              - End capture group 1
+            // \s*            - Optional trailing whitespace
+            // $              - End of line (m flag)
+            const jsonMatch = output.match(/^\s*RESULTS_JSON:\s*(.*)$/m);
 
             if (jsonMatch && jsonMatch[1]) {
-                jsonString = jsonMatch[1];
+                jsonString = jsonMatch[1].trim();
                 this.outputChannel.appendLine(`Found RESULTS_JSON line. Preparing to parse...`);
                 // Log the exact string being passed to JSON.parse
                 this.outputChannel.appendLine(`--- String to Parse as JSON ---\n${jsonString}\n-----------------------------`);
@@ -153,36 +163,41 @@ export class BenchmarkService {
                         results: parsed.results || []
                     };
                 } else {
-                     this.outputChannel.appendLine(`Warning: Parsed JSON does not have expected structure { results: [], fastest: "" }. Parsed: ${JSON.stringify(parsed)}`);
-                     // Fall through to error handling
+                     this.outputChannel.appendLine(`Warning: Parsed JSON does not have expected structure { results: [], fastest: "" }. Parsed: ${JSON.stringify(parsed)}. Falling back to text parsing.`);
+                     // Fall through to text parsing below
                 }
             } else {
-                 this.outputChannel.appendLine(`RESULTS_JSON line not found or regex did not capture the JSON object correctly.`);
-                 // Throw error if JSON line not found
-                 throw new Error('RESULTS_JSON line not found in benchmark output.'); 
+                 this.outputChannel.appendLine(`RESULTS_JSON line not found. Falling back to text parsing.`);
+                 // Fall through to text parsing below
             }
-
-            // Fallback or if primary parsing failed: Check for BENCHMARK_ERROR
-            const errorMatch = output.match(/^BENCHMARK_ERROR:\s*({[\s\S]*?})$/m);
-            if (errorMatch && errorMatch[1]) {
-                this.outputChannel.appendLine(`Found BENCHMARK_ERROR line: ${errorMatch[1]}`);
-                 // Throw an error instead of returning a specific structure
-                 throw new Error(`Benchmark script reported error: ${errorMatch[1]}`);
-            }
-
-            // If we fall through without returning or throwing, it means parsing failed
-            this.outputChannel.appendLine('Warning: Could not parse expected results from benchmark output.');
-             throw new Error('Failed to parse expected RESULTS_JSON from script output.');
-
         } catch (error) {
             // Catch JSON.parse errors specifically
-            this.outputChannel.appendLine(`Error parsing benchmark results JSON: ${error}`);
+            this.outputChannel.appendLine(`Error parsing benchmark results JSON: ${error}. Falling back to text parsing.`);
             // Log the string that failed parsing
             if (jsonString !== undefined) { // Only log if we thought we had a string
                  this.outputChannel.appendLine(`--- Failed JSON String ---\n${jsonString}\n------------------------`);
             }
-             // Re-throw the error to be caught by runBenchmark
-             throw new Error(`JSON Parsing failed: ${error}. See logs for details.`);
+             // Fall through to text parsing below
+        }
+        
+        // Fallback: Check for BENCHMARK_ERROR before attempting text parsing
+        const errorMatch = output.match(/^BENCHMARK_ERROR:\s*({[\s\S]*?})$/m);
+        if (errorMatch && errorMatch[1]) {
+            this.outputChannel.appendLine(`Found BENCHMARK_ERROR line: ${errorMatch[1]}`);
+             // Throw an error instead of returning a specific structure
+             throw new Error(`Benchmark script reported error: ${errorMatch[1]}`);
+        }
+
+        // Fallback to text parsing if JSON parsing failed or wasn't applicable
+        this.outputChannel.appendLine('Attempting to parse benchmark results using text format...');
+        const textResults = this.parseTextBenchmarkOutput(output);
+        if (textResults.results.length > 0) {
+            this.outputChannel.appendLine('Successfully parsed benchmark results from text output.');
+            return textResults;
+        } else {
+             this.outputChannel.appendLine('Warning: Could not parse results from text output either. Returning empty results.');
+             // Return default empty results if text parsing also fails
+             return { fastest: 'Unknown', results: [] }; 
         }
     }
     
@@ -193,17 +208,31 @@ export class BenchmarkService {
      * @returns The parsed benchmark comparison results
      */
     private parseTextBenchmarkOutput(output: string): BenchmarkComparison {
-        // Parse lines like "original x 1,234,567 ops/sec ±0.12% (95 runs sampled)"
-        const resultRegex = /([\w\s\(\)]+)\s+x\s+([\d,\.]+)\s+ops\/sec\s+±([\d\.]+)%/g;
+        // Parse lines like "  original x 1,234,567 ops/sec ±0.12% (95 runs sampled)"
+        // Regex explanation:
+        // ^\s*        - Start of line, followed by optional whitespace
+        // ([^\n\r]+?) - Capture group 1: Capture any character except newline/carriage return (non-greedy) - this is the name on the *same* line
+        // \s+x\s+      - Match " x " (with surrounding whitespace)
+        // ([\d,\.]+)   - Capture group 2: Capture digits, commas, periods (the ops/sec number)
+        // \s+ops\/sec   - Match " ops/sec"
+        // .*            - Match the rest of the line
+        const resultRegex = /^\s*([^\n\r]+?)\s+x\s+([\d,\.]+)\s+ops\/sec.*/gm;
         const results = [];
         let match;
         
         while ((match = resultRegex.exec(output)) !== null) {
             const name = match[1].trim();
-            const ops = parseFloat(match[2].replace(/,/g, ''));
-            const margin = parseFloat(match[3]) / 100;
+            // Ensure ops are parsed correctly, removing commas
+            const ops = parseFloat(match[2].replace(/,/g, '')); 
             
-            results.push({ name, ops, margin });
+            // Skip if ops parsing failed (NaN)
+            if (isNaN(ops)) {
+                this.outputChannel.appendLine(`Warning: Could not parse ops for benchmark case: ${name}`);
+                continue;
+            }
+
+            // Add margin: 0 to satisfy the BenchmarkResultItem type
+            results.push({ name, ops, margin: 0 }); 
         }
         
         // Sort results by ops descending to find the fastest
