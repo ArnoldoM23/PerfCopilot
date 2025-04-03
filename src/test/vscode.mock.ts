@@ -35,6 +35,7 @@ export class Selection extends Range {
     }
 }
 
+
 export enum ViewColumn {
     Active = -1,
     Beside = -2,
