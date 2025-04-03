@@ -38,7 +38,7 @@ jobs:
 
       # Runs the tests
       - name: Create build
-        run: npm runbuild # Or 'yarn test', or your specific test script command
+        run: npm run build # Or 'yarn test', or your specific test script command
 
       # Runs the tests
       - name: Run unit tests

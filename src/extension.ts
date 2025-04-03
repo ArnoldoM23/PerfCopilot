@@ -65,21 +65,20 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        outputChannel.appendLine(`Selected text: \n${selectedText}`);
+        outputChannel.appendLine(`Selected text: \\n${selectedText}`);
 
-        // TODO: Implement the logic to call the analysis service/participant
-        // This might involve creating a synthetic request or adding a new method
-        // to PerfCopilotParticipant or BenchmarkService.
-        vscode.window.showInformationMessage('Function analysis started... (Implementation Pending)');
-        outputChannel.appendLine('Function analysis initiated (handler logic needs implementation).');
+        // Format the prompt: @perfcopilot followed by the selected code
+        const prompt = `@PerfCopilot ${selectedText}`;
+        outputChannel.appendLine(`Formatted prompt for chat: ${prompt}`);
 
-        // Example (Conceptual - requires PerfCopilotParticipant refactor or new method):
-        // try {
-        //     await participant.analyzeFunctionDirectly(selectedText);
-        // } catch (error) {
-        //     vscode.window.showErrorMessage(`Analysis failed: ${error}`);
-        //     outputChannel.appendLine(`Error during analysis command: ${error}`);
-        // }
+        // Open the chat view and pre-fill the input with the prompt
+        try {
+            await vscode.commands.executeCommand('workbench.action.chat.open', { query: prompt });
+            outputChannel.appendLine('Opened chat view with pre-filled prompt via context menu.');
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to open chat view: ${error}`);
+            outputChannel.appendLine(`Error executing workbench.action.chat.open: ${error}`);
+        }
     });
     
     // Add to subscriptions
