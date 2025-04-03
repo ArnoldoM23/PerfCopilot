@@ -350,7 +350,7 @@ ${impl.code}
          return `
 You are a performance analysis assistant. Analyze the following JavaScript/TypeScript function implementations and their benchmark results.
 
-**Function Implementations:**
+**Implementations Provided:**
 ${functionsString}
 
 **Benchmark Results (Benny.js format):**
@@ -366,8 +366,9 @@ ${resultsString}
     *   A main heading (e.g., "# Performance Analysis").
     *   A **Summary** section stating the fastest implementation and percentage improvement over the original (calculate this: \`((fastestOps - originalOps) / originalOps) * 100\`). Handle the case where the original is fastest.
     *   A **Benchmark Results** section with a simple markdown table summarizing Name and Ops/sec. Indicate the fastest with a ⭐.
-    *   A detailed **Explanation** section covering point #2 above.
-    *   Optionally, include the full code of the **Fastest Implementation** in a code block at the end.
+    *   A section titled **Implementations Compared** that includes the *full code* for the 'Original', 'Alternative 1', and 'Alternative 2' functions, each within its own labeled Javascript code block (\`\`\`javascript ... \`\`\`).
+    *   A detailed **Explanation** section covering point #2 above (why the fastest was fastest).
+    *   A final section **Fastest Implementation** showing the *full code* of the winning implementation again in a Javascript code block.
 
 Provide *only* the markdown analysis. Do not include introductory or concluding remarks outside the markdown structure.
 `;
