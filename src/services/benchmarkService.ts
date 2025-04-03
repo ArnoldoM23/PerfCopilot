@@ -49,6 +49,9 @@ export class BenchmarkService {
             this.outputChannel.appendLine(`Running benchmark at ${tempFilePath}...`);
             const output = await runNodeScript(tempFilePath);
             
+            // Log the raw output before parsing
+            this.outputChannel.appendLine(`\n--- Raw Benchmark Script Output ---\n${output}\n----------------------------------\n`);
+            
             // Parse the benchmark results
             this.outputChannel.appendLine('Parsing benchmark results...');
             return this.parseBenchmarkResults(output);
@@ -126,41 +129,60 @@ export class BenchmarkService {
      * 
      * @param output - The output from the benchmark script
      * @returns The parsed benchmark comparison results
+     * @throws Error if parsing fails or benchmark reported an error
      */
     private parseBenchmarkResults(output: string): BenchmarkComparison {
+        let jsonString: string | undefined;
         try {
-            // Try to find the JSON results in the output
-            const jsonMatch = output.match(/RESULTS_JSON:\s*({[\s\S]*?})/);
-            
+            // Refined Regex: Match start of line, RESULTS_JSON:, optional whitespace,
+            // then capture the starting '{' and everything non-greedily until the final '}' on potentially multiple lines.
+            const jsonMatch = output.match(/^RESULTS_JSON:\s*({[\s\S]*})$/m);
+
             if (jsonMatch && jsonMatch[1]) {
-                const resultsJson = jsonMatch[1];
-                const results = JSON.parse(resultsJson);
-                
-                return {
-                    fastest: results.fastest || 'Unknown',
-                    results: results.results || []
-                };
+                jsonString = jsonMatch[1];
+                this.outputChannel.appendLine(`Found RESULTS_JSON line. Preparing to parse...`);
+                // Log the exact string being passed to JSON.parse
+                this.outputChannel.appendLine(`--- String to Parse as JSON ---\n${jsonString}\n-----------------------------`);
+                const parsed = JSON.parse(jsonString);
+
+                // Basic validation of the parsed JSON structure
+                if (parsed && typeof parsed === 'object' && Array.isArray(parsed.results) && typeof parsed.fastest === 'string') {
+                     this.outputChannel.appendLine(`Successfully parsed benchmark JSON.`);
+                    return {
+                        fastest: parsed.fastest || 'Unknown',
+                        results: parsed.results || []
+                    };
+                } else {
+                     this.outputChannel.appendLine(`Warning: Parsed JSON does not have expected structure { results: [], fastest: "" }. Parsed: ${JSON.stringify(parsed)}`);
+                     // Fall through to error handling
+                }
+            } else {
+                 this.outputChannel.appendLine(`RESULTS_JSON line not found or regex did not capture the JSON object correctly.`);
+                 // Throw error if JSON line not found
+                 throw new Error('RESULTS_JSON line not found in benchmark output.'); 
             }
-            
-            // If no JSON results found, try to parse the text output
-            const results = this.parseTextBenchmarkOutput(output);
-            
-            if (results.results.length > 0) {
-                return results;
+
+            // Fallback or if primary parsing failed: Check for BENCHMARK_ERROR
+            const errorMatch = output.match(/^BENCHMARK_ERROR:\s*({[\s\S]*?})$/m);
+            if (errorMatch && errorMatch[1]) {
+                this.outputChannel.appendLine(`Found BENCHMARK_ERROR line: ${errorMatch[1]}`);
+                 // Throw an error instead of returning a specific structure
+                 throw new Error(`Benchmark script reported error: ${errorMatch[1]}`);
             }
-            
-            // If still no results, return a default result
-            this.outputChannel.appendLine('Warning: Could not parse benchmark results');
-            return {
-                fastest: 'Unknown',
-                results: []
-            };
+
+            // If we fall through without returning or throwing, it means parsing failed
+            this.outputChannel.appendLine('Warning: Could not parse expected results from benchmark output.');
+             throw new Error('Failed to parse expected RESULTS_JSON from script output.');
+
         } catch (error) {
-            this.outputChannel.appendLine(`Error parsing benchmark results: ${error}`);
-            return {
-                fastest: 'Error',
-                results: []
-            };
+            // Catch JSON.parse errors specifically
+            this.outputChannel.appendLine(`Error parsing benchmark results JSON: ${error}`);
+            // Log the string that failed parsing
+            if (jsonString !== undefined) { // Only log if we thought we had a string
+                 this.outputChannel.appendLine(`--- Failed JSON String ---\n${jsonString}\n------------------------`);
+            }
+             // Re-throw the error to be caught by runBenchmark
+             throw new Error(`JSON Parsing failed: ${error}. See logs for details.`);
         }
     }
     
@@ -194,4 +216,4 @@ export class BenchmarkService {
             results
         };
     }
-} 
+}

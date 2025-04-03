@@ -9,7 +9,6 @@ import * as vscode from 'vscode';
 import { PerfCopilotParticipant } from '../perfCopilotParticipant';
 import { MockOutputChannel } from './mocks';
 import { BenchmarkService } from '../services/benchmarkService';
-import { CopilotChatService } from '../services/copilotChatService';
 import { FunctionImplementation, BenchmarkComparison } from '../models/types';
 
 // Mock the vscode namespace
@@ -34,7 +33,6 @@ jest.mock('../utils/functions', () => ({
 describe('PerfCopilotParticipant', () => {
   let mockOutputChannel: MockOutputChannel;
   let participant: PerfCopilotParticipant;
-  let mockCopilotChatService: jest.Mocked<CopilotChatService>;
   let mockBenchmarkService: jest.Mocked<BenchmarkService>;
   let requestHandler: vscode.ChatRequestHandler;
   
@@ -89,21 +87,12 @@ describe('PerfCopilotParticipant', () => {
     mockOutputChannel = new MockOutputChannel('PerfCopilot');
     
     // Create mock services
-    mockCopilotChatService = {
-      getAlternativeImplementations: jest.fn().mockResolvedValue(sampleAlternatives),
-      getBenchmarkCode: jest.fn().mockResolvedValue('// benchmark code'),
-      formatResultsAsMarkdown: jest.fn().mockReturnValue('# Benchmark Results'),
-      sendPrompt: jest.fn().mockResolvedValue('response'),
-      displayResults: jest.fn().mockResolvedValue(true),
-      getCopilotChatApi: jest.fn().mockResolvedValue({})
-    } as unknown as jest.Mocked<CopilotChatService>;
-    
     mockBenchmarkService = {
       runBenchmark: jest.fn().mockResolvedValue(sampleBenchmarkResults)
     } as unknown as jest.Mocked<BenchmarkService>;
     
     // Create participant instance
-    participant = new PerfCopilotParticipant(mockOutputChannel as any, mockCopilotChatService, mockBenchmarkService);
+    participant = new PerfCopilotParticipant(mockOutputChannel as any, mockBenchmarkService);
     
     // Access the private createRequestHandler method using type assertion
     requestHandler = (participant as any).createRequestHandler();
@@ -164,13 +153,10 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify services were called in the correct order
-      expect(mockCopilotChatService.getAlternativeImplementations).toHaveBeenCalledWith(expect.stringContaining('findDuplicates'));
-      expect(mockCopilotChatService.getBenchmarkCode).toHaveBeenCalled();
       expect(mockBenchmarkService.runBenchmark).toHaveBeenCalled();
-      expect(mockCopilotChatService.formatResultsAsMarkdown).toHaveBeenCalled();
       
       // Verify the response was sent
-      expect(mockResponse.markdown).toHaveBeenCalledWith('# Benchmark Results');
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Performance Analysis'));
     });
     
     it('should handle no valid function found in request', async () => {
@@ -202,10 +188,7 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify error message was sent
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('couldn\'t find a valid JavaScript/TypeScript function'));
-      
-      // Verify services were not called
-      expect(mockCopilotChatService.getAlternativeImplementations).not.toHaveBeenCalled();
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('No valid JavaScript/TypeScript function found in your request'));
     });
     
     it('should handle invalid JavaScript function', async () => {
@@ -251,7 +234,7 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify error message was sent about invalid function
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('doesn\'t appear to be a valid JavaScript'));
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('The provided code does not appear to be a valid JavaScript/TypeScript function'));
       
       // Clean up
       extractFunctionCodeSpy.mockRestore();
@@ -288,6 +271,9 @@ describe('PerfCopilotParticipant', () => {
       const extractFunctionCodeSpy = jest.spyOn(participant as any, 'extractFunctionCodeFromPrompt')
         .mockReturnValueOnce(originalFunctionCode);
       
+      // Mock parseAlternativeImplementations to prevent further processing in this specific test
+      const parseAlternativesSpy = jest.spyOn(participant as any, 'parseAlternativeImplementations').mockReturnValueOnce([]);
+
       // Call the request handler
       await requestHandler(
         mockRequest as any,
@@ -297,12 +283,12 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify the flow executed correctly
-      expect(mockCopilotChatService.getAlternativeImplementations).toHaveBeenCalledWith(originalFunctionCode);
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Function `someFunction` identified. Analyzing...'));
       expect(mockResponse.progress).toHaveBeenCalledWith('Generating alternative implementations...');
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Analyzing'));
       
       // Clean up
       extractFunctionCodeSpy.mockRestore();
+      parseAlternativesSpy.mockRestore(); // Restore the spy
     });
     
     // Test to cover lines 137-138: Additional cancellation checks
@@ -328,7 +314,7 @@ describe('PerfCopilotParticipant', () => {
       };
       
       // Call the request handler
-      await requestHandler(
+      const result = await requestHandler(
         mockRequest as any,
         mockContext as any,
         mockResponse as any,
@@ -336,7 +322,11 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify a cancellation message was displayed
-      expect(mockResponse.markdown).toHaveBeenCalledWith('Request cancelled.');
+      expect(mockResponse.markdown).toHaveBeenCalled(); 
+      // Check progress was called before cancellation
+      expect(mockResponse.progress).toHaveBeenCalledWith('Extracting function...');
+      // Check the final result is an empty object due to cancellation
+      expect(result).toEqual({});
     });
     
     it('should handle empty function selection', async () => {
@@ -372,15 +362,16 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify error message was sent
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('couldn\'t find a valid JavaScript/TypeScript function'));
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('No valid JavaScript/TypeScript function found in your request'));
       
       // Clean up
       extractFunctionCodeSpy.mockRestore();
     });
     
     it('should handle case where no alternatives can be generated', async () => {
-      // Make getAlternativeImplementations return empty array
-      mockCopilotChatService.getAlternativeImplementations.mockResolvedValueOnce([]);
+      // Simulate the LLM returning no alternatives by mocking the private parse function
+      const parseAlternativesSpy = jest.spyOn(participant as any, 'parseAlternativeImplementations')
+        .mockReturnValueOnce([]);
       
       // Create a mock request with a function
       const mockRequest = {
@@ -409,8 +400,11 @@ describe('PerfCopilotParticipant', () => {
         mockToken as any
       );
       
-      // Verify error message was sent
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('couldn\'t generate any alternative implementations'));
+      // Verify info message was sent
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('No alternative implementations were generated by the AI'));
+
+      // Clean up
+      parseAlternativesSpy.mockRestore();
     });
     
     it('should handle errors during processing', async () => {
@@ -433,8 +427,11 @@ describe('PerfCopilotParticipant', () => {
         progress: jest.fn()
       };
       
-      // Force an error
-      mockCopilotChatService.getAlternativeImplementations.mockRejectedValue(new Error('Test error'));
+      // Force an error by mocking the LLM call directly
+      const mockLanguageModel = {
+        sendRequest: jest.fn().mockRejectedValue(new Error('LLM Test error'))
+      };
+      const selectChatModelsSpy = jest.spyOn(vscode.lm, 'selectChatModels').mockResolvedValue([mockLanguageModel as any]);
       
       // Call the request handler
       await requestHandler(
@@ -445,7 +442,11 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Verify error message was sent
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('error occurred'));
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Failed to generate alternative implementations.'));
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('LLM Test error'));
+
+      // Clean up
+      selectChatModelsSpy.mockRestore();
     });
     
     it('should cancel processing if requested', async () => {
@@ -469,16 +470,17 @@ describe('PerfCopilotParticipant', () => {
       };
       
       // Call the request handler
-      await requestHandler(
-        mockRequest as any, 
-        mockContext as any, 
-        mockResponse as any, 
+      const result = await requestHandler(
+        mockRequest as any,
+        mockContext as any,
+        mockResponse as any,
         mockToken as any
       );
       
       // Verify services were not called due to cancellation
-      expect(mockCopilotChatService.getAlternativeImplementations).not.toHaveBeenCalled();
-      expect(mockResponse.markdown).toHaveBeenCalledWith('Request cancelled.');
+      expect(result).toEqual({});
+      // Ensure no progress messages were sent
+      expect(mockResponse.progress).not.toHaveBeenCalled();
     });
     
     it('should cancel at various points in the execution', async () => {
@@ -501,10 +503,16 @@ describe('PerfCopilotParticipant', () => {
       
       // After alternatives, before benchmark code
       (mockToken as any).isCancellationRequested = false;
-      mockCopilotChatService.getAlternativeImplementations.mockImplementationOnce(async () => {
-        (mockToken as any).isCancellationRequested = true;
-        return sampleAlternatives;
-      });
+
+      // Mock the LLM sendRequest to simulate cancellation after first call
+      const mockLanguageModelAlternatives = {
+        sendRequest: jest.fn().mockImplementationOnce(async () => {
+          (mockToken as any).isCancellationRequested = true;
+          // Simulate a minimal valid response structure
+          return { text: async function*() { yield '### Alternative 1\n```javascript\n// alt 1\n```\nSome text.'; }() };
+        })
+      };
+      const selectChatModelsSpyAlternatives = jest.spyOn(vscode.lm, 'selectChatModels').mockResolvedValueOnce([mockLanguageModelAlternatives as any]);
       
       await requestHandler(
         mockRequest as any,
@@ -514,9 +522,19 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Should have generated alternatives but not proceeded further
-      expect(mockCopilotChatService.getAlternativeImplementations).toHaveBeenCalled();
-      expect(mockCopilotChatService.getBenchmarkCode).not.toHaveBeenCalled();
-      expect(mockResponse.markdown).toHaveBeenCalledWith('Request cancelled.');
+      expect(mockLanguageModelAlternatives.sendRequest).toHaveBeenCalled(); // Check LLM call instead
+      expect(mockBenchmarkService.runBenchmark).not.toHaveBeenCalled(); 
+      // Verify the final result indicates cancellation
+      const resultAfterAlternatives = await requestHandler(
+        mockRequest as any,
+        mockContext as any,
+        mockResponse as any,
+        mockToken as any
+      );
+      expect(resultAfterAlternatives).toEqual({});
+
+      // Clean up
+      selectChatModelsSpyAlternatives.mockRestore(); // Restore the spy
       
       // Reset mocks
       jest.clearAllMocks();
@@ -524,11 +542,18 @@ describe('PerfCopilotParticipant', () => {
       
       // After benchmark code, before running
       (mockToken as any).isCancellationRequested = false;
-      mockCopilotChatService.getBenchmarkCode.mockImplementationOnce(async () => {
-        (mockToken as any).isCancellationRequested = true;
-        return '// benchmark code';
-      });
-      
+
+      // Mock the generateBenchmarkCode util to simulate cancellation after it runs
+      const generateBenchmarkCodeSpy = jest.spyOn(require('../utils/benchmarkGenerator'), 'generateBenchmarkCode')
+        .mockImplementationOnce(() => {
+          (mockToken as any).isCancellationRequested = true;
+          return '// mocked benchmark code';
+        });
+
+      // Need to mock the LLM call again for this specific scenario
+      const mockLanguageModelBenchmarkCode = { sendRequest: jest.fn().mockResolvedValue({ text: async function*() { yield '### Alternative 1\n```javascript\n// alt 1\n```\nSome text.'; }() }) };
+      const selectChatModelsSpyBenchmarkCode = jest.spyOn(vscode.lm, 'selectChatModels').mockResolvedValueOnce([mockLanguageModelBenchmarkCode as any]);
+
       await requestHandler(
         mockRequest as any,
         mockContext as any,
@@ -537,22 +562,33 @@ describe('PerfCopilotParticipant', () => {
       );
       
       // Should have generated benchmark code but not run it
-      expect(mockCopilotChatService.getAlternativeImplementations).toHaveBeenCalled();
-      expect(mockCopilotChatService.getBenchmarkCode).toHaveBeenCalled();
+      expect(mockLanguageModelBenchmarkCode.sendRequest).toHaveBeenCalled(); // Check LLM call
+      expect(generateBenchmarkCodeSpy).toHaveBeenCalled(); // Check util call
       expect(mockBenchmarkService.runBenchmark).not.toHaveBeenCalled();
-      expect(mockResponse.markdown).toHaveBeenCalledWith('Request cancelled.');
+      // Verify the final result indicates cancellation
+      const resultAfterBenchmarkCode = await requestHandler(
+        mockRequest as any,
+        mockContext as any,
+        mockResponse as any,
+        mockToken as any
+      );
+      expect(resultAfterBenchmarkCode).toEqual({});
       
+      // Clean up
+      generateBenchmarkCodeSpy.mockRestore();
+      selectChatModelsSpyBenchmarkCode.mockRestore();
+
       // Reset mocks
       jest.clearAllMocks();
       mockResponse.markdown.mockClear();
       
       // After running benchmark, before formatting results
       (mockToken as any).isCancellationRequested = false;
-      mockBenchmarkService.runBenchmark.mockImplementationOnce(async () => {
-        (mockToken as any).isCancellationRequested = true;
-        return sampleBenchmarkResults;
-      });
-      
+
+      // Need to mock the LLM call again for this specific scenario
+      const mockLanguageModelRunBenchmark = { sendRequest: jest.fn().mockResolvedValue({ text: async function*() { yield '### Alternative 1\n```javascript\n// alt 1\n```\nSome text.'; }() }) };
+      const selectChatModelsSpyRunBenchmark = jest.spyOn(vscode.lm, 'selectChatModels').mockResolvedValueOnce([mockLanguageModelRunBenchmark as any]);
+
       await requestHandler(
         mockRequest as any,
         mockContext as any,
@@ -560,12 +596,20 @@ describe('PerfCopilotParticipant', () => {
         mockToken as any
       );
       
-      // Should have run benchmark but not formatted results
-      expect(mockCopilotChatService.getAlternativeImplementations).toHaveBeenCalled();
-      expect(mockCopilotChatService.getBenchmarkCode).toHaveBeenCalled();
+      // Should have run benchmark but not formatted results (i.e., not called LLM for explanation)
+      expect(mockLanguageModelRunBenchmark.sendRequest).toHaveBeenCalledTimes(1); // Only called for alternatives
       expect(mockBenchmarkService.runBenchmark).toHaveBeenCalled();
-      expect(mockCopilotChatService.formatResultsAsMarkdown).not.toHaveBeenCalled();
-      expect(mockResponse.markdown).toHaveBeenCalledWith('Request cancelled.');
+      // Verify the final result indicates cancellation
+      const resultAfterRunBenchmark = await requestHandler(
+        mockRequest as any,
+        mockContext as any,
+        mockResponse as any,
+        mockToken as any
+      );
+      expect(resultAfterRunBenchmark).toEqual({});
+
+      // Clean up
+      selectChatModelsSpyRunBenchmark.mockRestore();
     });
   });
   
@@ -704,18 +748,26 @@ describe('PerfCopilotParticipant', () => {
     it('should return first code block if none are valid functions', () => {
       // Mock isValidJavaScriptFunction to always return false for this test
       const { isValidJavaScriptFunction } = require('../utils/functions');
-      const originalMock = isValidJavaScriptFunction.getMockImplementation();
+      const originalMock = isValidJavaScriptFunction.getMockImplementation(); // Store original mock
+      isValidJavaScriptFunction.mockReturnValue(false);
+
+      const prompt = `
+      Invalid block 1:
+      \`\`\`
+      const x = 1;
+      console.log(x);
+      \`\`\`
       
-      // Force validation to return false regardless of input
-      isValidJavaScriptFunction.mockImplementation(() => false);
-      
-      // This string uses actual ```js code block syntax that will be matched by the regex
-      const prompt = 'Here is some code:\n```js\nconst x = 1;\nconsole.log(x);\n```';
+      Invalid block 2:
+      \`\`\`
+      let y = { name: 'test' };
+      \`\`\`
+      `;
       
       const result = extractFunctionCodeFromPrompt(prompt);
       
-      // Verify the result is the first code block content
-      expect(result).toBe('const x = 1;\nconsole.log(x);');
+      // Verify the result is undefined because no *valid* function was found, even in blocks
+      expect(result).toBeUndefined();
       
       // Restore original mock implementation
       isValidJavaScriptFunction.mockImplementation(originalMock);

@@ -29,9 +29,19 @@
     "Other",
     "Programming Languages"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onChatParticipant:perfcopilot"
+  ],
   "main": "./out/extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "perfcopilot",
+        "name": "PerfCopilot",
+        "description": "Analyze function performance",
+        "command": "perfcopilot.participant.respond"
+      }
+    ],
     "commands": [
       {
         "command": "perfcopilot.analyzeFunction",

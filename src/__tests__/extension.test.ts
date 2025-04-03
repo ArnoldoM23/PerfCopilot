@@ -54,7 +54,6 @@ jest.mock('vscode', () => {
 });
 
 // Mock modules
-jest.mock('../services/copilotChatService');
 jest.mock('../services/benchmarkService');
 jest.mock('../perfCopilotParticipant');
 jest.mock('fs');
@@ -63,7 +62,6 @@ jest.mock('os');
 
 // Import the module to test
 import { activate, deactivate } from '../extension';
-import { CopilotChatService } from '../services/copilotChatService';
 import { BenchmarkService } from '../services/benchmarkService';
 import { PerfCopilotParticipant } from '../perfCopilotParticipant';
 
@@ -115,7 +113,6 @@ describe('PerfCopilot Extension', () => {
     
     it('should initialize services', async () => {
       await activate(mockContext);
-      expect(CopilotChatService).toHaveBeenCalled();
       expect(BenchmarkService).toHaveBeenCalled();
     });
     

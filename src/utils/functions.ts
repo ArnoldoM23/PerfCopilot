@@ -36,6 +36,7 @@ export function isValidJavaScriptFunction(code: string): boolean {
     return false;
 }
 
+
 /**
  * Creates a temporary file with the given content.
  * 
@@ -85,14 +86,17 @@ export function runNodeScript(scriptPath: string): Promise<string> {
         // Handle process completion
         childProcess.on('close', (code) => {
             if (code !== 0) {
-                reject(new Error(`Script exited with code ${code}: ${errorData}`));
+                // Include both stdout and stderr in the rejection for debugging
+                reject(new Error(`Script exited with code ${code}. Stderr: ${errorData}. Stdout: ${outputData}`));
                 return;
             }
             
-            resolve(outputData);
+            // Combine stdout and stderr in the resolved output for easier debugging
+            const combinedOutput = outputData + (errorData ? `\n--- STDERR ---\n${errorData}` : '');
+            resolve(combinedOutput);
         });
         
-        // Handle process errors
+        // Handle process errors (e.g., node not found)
         childProcess.on('error', (err) => {
             reject(err);
         });
