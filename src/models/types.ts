@@ -58,49 +58,16 @@ export interface BenchmarkComparison {
 }
 
 /**
- * Represents the complete analysis result for a function
+ * Represents the complete benchmark comparison results
  */
-export interface AnalysisResult {
+export interface BenchmarkComparison {
     /**
-     * The original function implementation
+     * Name of the fastest implementation
      */
-    originalFunction: FunctionImplementation;
-    
-    /**
-     * Alternative implementations generated for the function
-     */
-    alternativeImplementations: FunctionImplementation[];
+    fastest: string;
     
     /**
-     * Benchmark comparison results (if benchmarking was performed)
+     * Array of benchmark result items
      */
-    benchmarkComparison?: BenchmarkComparison;
-}
-
-/**
- * Configuration options for the extension
- */
-export interface PerfCopilotConfig {
-    /** Number of alternative implementations to generate */
-    alternativeCount: number;
-    
-    /** Number of benchmark iterations to run */
-    benchmarkIterations: number;
-    
-    /** Whether to save results to history */
-    saveToHistory: boolean;
-}
-
-/**
- * Represents a message sent from the webview to the extension
- */
-export interface WebviewMessage {
-    /** The command to execute */
-    command: string;
-    
-    /** Optional ID parameter */
-    id?: string;
-    
-    /** Optional data parameter */
-    data?: any;
+    results: BenchmarkResultItem[];
 } 

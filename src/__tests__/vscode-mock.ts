@@ -44,8 +44,11 @@ const mockTextEditor = {
 };
 
 // Add mock for LanguageModelChatMessage
+// eslint-disable-next-line @typescript-eslint/naming-convention
 const mockLanguageModelChatMessage = {
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   User: jest.fn((content) => ({ role: 'user', content })),
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   Assistant: jest.fn((content) => ({ role: 'assistant', content })),
 };
 
@@ -95,6 +98,7 @@ module.exports = {
     fire: jest.fn(),
     dispose: jest.fn(),
   })),
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   LanguageModelChatMessage: mockLanguageModelChatMessage,
 
   // Export mock instances for potential use in tests

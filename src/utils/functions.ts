@@ -139,19 +139,4 @@ export function extractFunctionName(functionCode: string): string | undefined {
     }
     
     return undefined;
-}
-
-/**
- * Calculates the percentage improvement between two operations per second values.
- * 
- * @param originalOps - The original operations per second
- * @param improvedOps - The improved operations per second
- * @returns The percentage improvement
- */
-export function calculateImprovement(originalOps: number, improvedOps: number): number {
-    if (originalOps <= 0) {
-        return 0;
-    }
-    
-    return ((improvedOps - originalOps) / originalOps) * 100;
 } 

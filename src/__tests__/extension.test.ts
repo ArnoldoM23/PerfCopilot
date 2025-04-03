@@ -65,15 +65,6 @@ import { activate, deactivate } from '../extension';
 import { BenchmarkService } from '../services/benchmarkService';
 import { PerfCopilotParticipant } from '../perfCopilotParticipant';
 
-// Add mock for clipboard API
-mockVscode.env = {
-  ...mockVscode.env,
-  clipboard: {
-    readText: jest.fn().mockResolvedValue(''),
-    writeText: jest.fn().mockResolvedValue(undefined)
-  }
-};
-
 describe('PerfCopilot Extension', () => {
   // Mock context for extension activation
   const mockContext: any = {
@@ -83,13 +74,21 @@ describe('PerfCopilot Extension', () => {
   // Access the VS Code mock
   const vscode = require('vscode');
 
-    beforeEach(() => {
+  // Add mock for clipboard API (needed if testing clipboard interactions)
+  // Ensure vscode.env exists before trying to spread it
+  vscode.env = vscode.env || {}; 
+  vscode.env.clipboard = {
+    readText: jest.fn().mockResolvedValue(''),
+    writeText: jest.fn().mockResolvedValue(undefined)
+  };
+
+  beforeEach(() => {
     // Reset all mocks before each test
-        jest.clearAllMocks();
-        
+    jest.clearAllMocks();
+    
     // Set up default active editor
-        vscode.window.activeTextEditor = {
-            document: {
+    vscode.window.activeTextEditor = {
+      document: {
         getText: jest.fn().mockImplementation((_selection: any) => 'function test() { return 1; }')
       },
       selection: {}
