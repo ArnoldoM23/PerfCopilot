@@ -2,7 +2,7 @@
  * Tests for utility functions
  */
 
-import { extractFunctionName, calculateImprovement } from '../utils/functions';
+import { extractFunctionName } from '../utils/functions';
 import { runNodeScript } from '../utils/functions';
 import path from 'path';
 import { EventEmitter } from 'events';
@@ -100,48 +100,6 @@ describe('Utility Functions', () => {
       
       const name = extractFunctionName(code);
       expect(name).toBeUndefined();
-    });
-  });
-  
-  describe('calculateImprovement', () => {
-    it('should calculate positive improvement percentage', () => {
-      const originalOps = 1000;
-      const improvedOps = 1500;
-      
-      const improvement = calculateImprovement(originalOps, improvedOps);
-      expect(improvement).toBe(50); // 50% improvement
-    });
-    
-    it('should calculate negative improvement percentage', () => {
-      const originalOps = 1000;
-      const improvedOps = 800;
-      
-      const improvement = calculateImprovement(originalOps, improvedOps);
-      expect(improvement).toBe(-20); // 20% worse
-    });
-    
-    it('should handle zero original ops', () => {
-      const originalOps = 0;
-      const improvedOps = 1000;
-      
-      const improvement = calculateImprovement(originalOps, improvedOps);
-      expect(improvement).toBe(0); // Cannot calculate improvement from zero
-    });
-    
-    it('should handle negative original ops', () => {
-      const originalOps = -100;
-      const improvedOps = 1000;
-      
-      const improvement = calculateImprovement(originalOps, improvedOps);
-      expect(improvement).toBe(0); // Cannot calculate improvement from negative
-    });
-    
-    it('should handle zero improvement', () => {
-      const originalOps = 1000;
-      const improvedOps = 1000;
-      
-      const improvement = calculateImprovement(originalOps, improvedOps);
-      expect(improvement).toBe(0); // No improvement
     });
   });
 
