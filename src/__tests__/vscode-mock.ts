@@ -45,8 +45,8 @@ const mockTextEditor = {
 
 // Add mock for LanguageModelChatMessage
 const mockLanguageModelChatMessage = {
-  user: jest.fn((content) => ({ role: 'user', content })),
-  assistant: jest.fn((content) => ({ role: 'assistant', content })),
+  User: jest.fn((content) => ({ role: 'user', content })),
+  Assistant: jest.fn((content) => ({ role: 'assistant', content })),
 };
 
 module.exports = {
@@ -95,7 +95,7 @@ module.exports = {
     fire: jest.fn(),
     dispose: jest.fn(),
   })),
-  languageModelChatMessage: mockLanguageModelChatMessage,
+  LanguageModelChatMessage: mockLanguageModelChatMessage,
 
   // Export mock instances for potential use in tests
   _mockLanguageModel: mockLanguageModel,

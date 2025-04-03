@@ -19,20 +19,30 @@ import { spawn } from 'child_process';
  * @returns True if the code appears to be a valid JavaScript function
  */
 export function isValidJavaScriptFunction(code: string): boolean {
-    // Very basic check - look for function keyword or arrow syntax
-    const functionRegex = /function\s+(\w+)?\s*\(.*\)\s*{/;
-    const arrowFunctionRegex = /(\w+)?\s*(\(.*\)|[\w.]+)\s*=>\s*({|[^;])/;
-    const methodRegex = /(\w+)\s*\(.*\)\s*{/;
-    const classRegex = /class\s+\w+/;
-    
-    // Check for function patterns
-    if (functionRegex.test(code) || 
-        arrowFunctionRegex.test(code) || 
-        methodRegex.test(code) ||
-        classRegex.test(code)) {
+    const trimmedCode = code.trim();
+
+    // Basic sanity checks
+    if (!trimmedCode || trimmedCode.startsWith('//') || trimmedCode.startsWith('/*')) {
+        return false;
+    }
+
+    // Very basic check: Does it contain 'function' or '=>'?
+    // This is loose but avoids complex regex issues.
+    // We rely on later stages (LLM, benchmark runner) to catch truly invalid syntax.
+    const hasFunctionKeyword = /\bfunction\b/.test(trimmedCode);
+    const hasArrow = /=>/.test(trimmedCode);
+
+    if (hasFunctionKeyword || hasArrow) {
         return true;
     }
-    
+
+    // Maybe it's a simple method definition like `methodName() { ... }`?
+    // Check for identifier followed by parens and brace.
+    const methodLikely = /^\s*[a-zA-Z_$][\w$]*\s*\([^)]*\)\s*\{/.test(trimmedCode);
+    if (methodLikely) {
+        return true;
+    }
+
     return false;
 }
 

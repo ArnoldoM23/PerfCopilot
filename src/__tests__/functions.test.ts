@@ -3,6 +3,11 @@
  */
 
 import { extractFunctionName, calculateImprovement } from '../utils/functions';
+import { runNodeScript } from '../utils/functions';
+import path from 'path';
+import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import { spawn } from 'child_process';
 
 // Mock the fs, path, and os modules
 jest.mock('fs', () => ({
@@ -19,56 +24,35 @@ jest.mock('os', () => ({
   tmpdir: jest.fn().mockReturnValue('/tmp')
 }), { virtual: true });
 
-// Mock child_process spawn
+// Define mockSpawn at the module scope so jest.mock can see it
+let mockSpawn: jest.Mock;
+let mockChildProcess: EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
+let mockStdout: EventEmitter;
+let mockStderr: EventEmitter;
+
+// Mock child_process at the module level
 jest.mock('child_process', () => ({
-  spawn: jest.fn().mockImplementation(() => {
-    const eventHandlers: Record<string, Array<(...args: any[]) => void>> = {
-      'data': [],
-      'close': [],
-      'error': []
-    };
-    
-    const mockProcess = {
-      stdout: {
-        on: (event: string, handler: (...args: any[]) => void) => {
-          if (event === 'data') {
-            eventHandlers.data.push(handler);
-          }
-          return mockProcess.stdout;
-        }
-      },
-      stderr: {
-        on: (event: string, handler: (...args: any[]) => void) => {
-          if (event === 'data') {
-            eventHandlers.data.push(handler);
-          }
-          return mockProcess.stderr;
-        }
-      },
-      on: (event: string, handler: (...args: any[]) => void) => {
-        if (event === 'close' || event === 'error') {
-          eventHandlers[event].push(handler);
-        }
-        return mockProcess;
-      },
-      // Helper methods for tests to trigger events
-      emitStdout: (data: string) => {
-        eventHandlers.data.forEach(handler => handler(Buffer.from(data)));
-        return mockProcess;
-      },
-      emitClose: (code: number) => {
-        eventHandlers.close.forEach(handler => handler(code));
-        return mockProcess;
-      },
-      emitError: (error: Error) => {
-        eventHandlers.error.forEach(handler => handler(error));
-        return mockProcess;
-      }
-    };
-    
-    return mockProcess;
-  })
-}), { virtual: true });
+  ...jest.requireActual('child_process'), // Keep other exports
+  spawn: (...args: any[]) => { // Use a function factory
+    // If mockSpawn is defined (i.e., inside a test), call it
+    if (mockSpawn) {
+      return mockSpawn(...args);
+    }
+    // Otherwise, maybe return a default mock or throw? For tests, it should be defined.
+    throw new Error("mockSpawn was not defined before calling spawn"); 
+  },
+}));
+
+// Mock fs promises for createTempFile tests (if needed, keep if already there)
+jest.mock('fs', () => ({
+    ...jest.requireActual('fs'),
+    promises: {
+        ...jest.requireActual('fs').promises,
+        writeFile: jest.fn().mockResolvedValue(undefined),
+        unlink: jest.fn().mockResolvedValue(undefined),
+    },
+    existsSync: jest.fn(),
+}));
 
 describe('Utility Functions', () => {
   describe('extractFunctionName', () => {
@@ -158,6 +142,102 @@ describe('Utility Functions', () => {
       
       const improvement = calculateImprovement(originalOps, improvedOps);
       expect(improvement).toBe(0); // No improvement
+    });
+  });
+
+  // Add tests for runNodeScript
+  describe('runNodeScript', () => {
+    let runNodeScript: (scriptPath: string) => Promise<string>; // Type for the function
+
+    beforeEach(() => {
+      // Reset modules to ensure we get a fresh import with the mock
+      jest.resetModules();
+
+      // Re-require the specific function *after* resetting modules
+      // This ensures it picks up the mocked 'child_process'
+      runNodeScript = require('../utils/functions').runNodeScript;
+
+      // Create mock emitters
+      mockStdout = new EventEmitter();
+      mockStderr = new EventEmitter();
+      mockChildProcess = Object.assign(new EventEmitter(), {
+          stdout: mockStdout,
+          stderr: mockStderr,
+      });
+
+      // Assign the mock implementation for spawn for this test
+      mockSpawn = jest.fn().mockReturnValue(mockChildProcess);
+    });
+
+    afterEach(() => {
+        jest.clearAllMocks();
+         // Important: Clear the mock function itself between tests
+        mockSpawn = undefined as any; 
+    });
+
+    it('should resolve with combined stdout and stderr on successful execution (code 0)', async () => {
+      // Arrange
+      const scriptPath = '/tmp/test-script.js'; 
+      const stdoutData = 'Standard output data.';
+      const stderrData = 'Error output data.';
+      const promise = runNodeScript(scriptPath); // Call the function which calls spawn
+
+      // Act: Simulate process output and closing
+      mockStdout.emit('data', stdoutData); 
+      mockStderr.emit('data', stderrData); 
+      mockChildProcess.emit('close', 0); 
+
+      // Assert
+      await expect(promise).resolves.toBe(`${stdoutData}\n--- STDERR ---\n${stderrData}`);
+      expect(mockSpawn).toHaveBeenCalledWith('node', [scriptPath]); // Simplified assertion
+    });
+
+     it('should resolve with only stdout if stderr is empty on success', async () => {
+         // Arrange
+         const scriptPath = '/tmp/test-script.js';
+         const stdoutData = 'Standard output only.';
+         const promise = runNodeScript(scriptPath); 
+
+         // Act
+         mockStdout.emit('data', stdoutData);
+         // No stderr data emitted
+         mockChildProcess.emit('close', 0);
+
+         // Assert
+         await expect(promise).resolves.toBe(stdoutData); 
+         expect(mockSpawn).toHaveBeenCalledWith('node', [scriptPath]); 
+     });
+
+    it('should reject with an error including stderr and stdout on non-zero exit code', async () => {
+      // Arrange
+      const scriptPath = '/tmp/error-script.js';
+      const stderrData = 'Script failed!';
+      const stdoutData = 'Some output before failing';
+      const exitCode = 1;
+      const promise = runNodeScript(scriptPath); 
+
+      // Act
+      mockStdout.emit('data', stdoutData);
+      mockStderr.emit('data', stderrData);
+      mockChildProcess.emit('close', exitCode);
+
+      // Assert
+      await expect(promise).rejects.toThrow(`Script exited with code ${exitCode}. Stderr: ${stderrData}. Stdout: ${stdoutData}`);
+      expect(mockSpawn).toHaveBeenCalledWith('node', [scriptPath]);
+    });
+
+    it('should reject with an error if the process emits an error', async () => {
+      // Arrange
+      const scriptPath = '/tmp/spawn-error-script.js';
+      const error = new Error('Spawn error');
+      const promise = runNodeScript(scriptPath); 
+
+      // Act
+      mockChildProcess.emit('error', error); // Emit the 'error' event
+
+      // Assert
+      await expect(promise).rejects.toThrow(error); 
+       expect(mockSpawn).toHaveBeenCalledWith('node', [scriptPath]);
     });
   });
 }); 
