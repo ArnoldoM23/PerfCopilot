@@ -73,12 +73,13 @@ export async function createTempFile(content: string, filename: string): Promise
  * Runs a NodeJS script and returns its output.
  * 
  * @param scriptPath - The path to the script to run
+ * @param args - Optional array of arguments to pass to the script
  * @returns The output of the script
  */
-export function runNodeScript(scriptPath: string): Promise<string> {
+export function runNodeScript(scriptPath: string, args: string[] = []): Promise<string> {
     return new Promise((resolve, reject) => {
         // Spawn a Node.js process
-        const childProcess = spawn('node', [scriptPath]);
+        const childProcess = spawn('node', [scriptPath, ...args]);
         
         let outputData = '';
         let errorData = '';

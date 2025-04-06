@@ -45,7 +45,7 @@ There are two main ways to use PerfCopilot:
 **1. Using the Chat (`@PerfCopilot`)**
 
    *   Open the VS Code Chat view (`Ctrl+Shift+P` or `Cmd+Shift+P`, then type `Chat: Focus on Chat View`).
-   *   Type `@PerfCopilot` followed by the JavaScript/TypeScript function you want to analyze. You can paste the code directly or enclose it in a Markdown code block (\`\`\`js ... \`\`\`).
+   *   Type `@PerfCopilot` followed by the JavaScript/TypeScript function you want to analyze. You can paste the code directly or enclose it in a Markdown code block (\`\`\`js ... \`\`\`). Do not include export keywords in the functions.
    *   Press Enter.
 
    **Example Chat Query:**

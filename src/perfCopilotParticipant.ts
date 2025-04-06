@@ -414,23 +414,11 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
             return `// Implementation for: ${impl.name}\n${functionCode}\n`;
         }).join('\n');
 
-        const benchmarkAdds = allImplementations.map((impl, index) => {
-            let scriptFunctionName = impl.name.toLowerCase().replace(/\s+/g, '');
-             if (!/^[a-zA-Z_$][0-9a-zA-Z_$]*$/.test(scriptFunctionName)) {
-                 scriptFunctionName = `func${index}`;
-             } else {
-                 scriptFunctionName += 'Fn';
-             }
-            // Assume functions take simple comparable arguments like numbers or strings for basic benchmarking
-            // More complex input data generation might be needed for real-world cases
-            return `    .add('${impl.name}', () => { ${scriptFunctionName}(testData); }) // Using placeholder testData`;
-        }).join('\n');
-
         return `
-You are a benchmark code generation assistant.
-Your task is to create a complete Node.js script using the 'benny' library to benchmark the following JavaScript/TypeScript functions.
+You are a JavaScript code generation assistant.
+Your task is to generate a simple Node.js module that exports the following function implementations and suitable test data.
 
-**Function Implementations:**
+**Function Implementations Provided:**
 
 \`\`\`javascript
 ${functionDefinitions}
@@ -438,37 +426,25 @@ ${functionDefinitions}
 
 **Requirements:**
 
-1.  **Include Benny:** Start the script with \`const benny = require('benny');\`.
-2.  **Define Test Data:** Create simple, representative test data suitable for the functions provided. Assign it to a variable named \`testData\`. For example, if the functions seem to operate on arrays, create a sample array. If they take numbers, use sample numbers. *Crucially, ensure this \`testData\` is defined BEFORE the \`benny.suite\` call.*
-3.  **Create Suite:** Use \`benny.suite('Function Performance Benchmark', ...)\` to define the benchmark suite.
-4.  **Add Cases:** For each function implementation provided above, add a benchmark case using \`benny.add()\`.
-    *   The first argument to \`benny.add\` should be the implementation's name (e.g., 'Original', 'Alternative 1').
-    *   The second argument should be an arrow function that calls the corresponding function implementation with the \`testData\`. Make sure to call the correctly named function (e.g., \`originalFn\`, \`alternative1Fn\`).
-    *   Chain the \`.add\` calls.
-5.  **Add Cycle and Complete:** Include \`benny.cycle()\` and \`benny.complete((summary) => { ... })\`.
-6.  **Output JSON:** Inside the \`benny.complete\` callback, format the results minimally: Extract only the 'name' and 'ops' (operations per second) for each result. Construct a JSON object containing a \`results\` array with these objects \`{ name: string, ops: number }\` and a \`fastest\` property containing the name of the fastest suite. Log this JSON object to the console *exactly* as follows: \`console.log('RESULTS_JSON: ' + JSON.stringify({ results: formattedResults, fastest: fastestSuiteName }));\`. **Do not log anything else.** This specific format is crucial for parsing.
-7.  **Provide Only Code:** Output *only* the complete Node.js script within a single \`\`\`javascript code block. Do not include any explanations or introductory text outside the code block.
+1.  **Define Test Data:** Create simple, representative test data suitable for the functions provided. Assign it to a variable named \`testData\`. For example, if the functions operate on arrays, create a sample array. If they take numbers, use sample numbers.
+2.  **Export Functions and Data:** Export all the function implementations (using the standardized names like \`originalFn\`, \`alternative1Fn\`, etc., which are already defined in the \`Function Implementations Provided\` section above) and the \`testData\` variable using \`module.exports\`.
+3.  **Provide Only Code:** Output *only* the complete Node.js module script within a single \`\`\`javascript code block. Do not include \`require('benny')\` or any benchmarking code (\`benny.suite\`, \`benny.add\`, etc.). Do not include any explanations or introductory text outside the code block.
 
-**Example \`benny.add\` calls structure:**
+**Example Output Structure:**
 
 \`\`\`javascript
-benny.suite(
-    'Function Performance Benchmark',
-    // Make sure testData is defined here or above
-    // const testData = ...;
+// Define testData
+const testData = [/* ... suitable data ... */];
 
-${benchmarkAdds}
-    , // Ensure comma separation for chained calls
-    benny.cycle(),
-    benny.complete((summary) => {
-        const formattedResults = summary.results.map(res => ({ name: res.name, ops: res.ops }));
-        const fastestSuiteName = summary.results.find(res => res.rank === 1)?.name || 'Unknown'; // Find fastest based on rank
-        console.log('RESULTS_JSON: ' + JSON.stringify({ results: formattedResults, fastest: fastestSuiteName }));
-    })
-)
+// Function definitions (as provided above)
+const originalFn = /* ... code ... */ ;
+const alternative1Fn = /* ... code ... */ ;
+// ... etc ...
+
+module.exports = {\n    testData,\n    originalFn,\n    alternative1Fn,\n    // ... etc ...\n};
 \`\`\`
 
-Generate the complete benchmark script now based on the provided functions.
+Generate the simple Node.js module containing the functions and test data now.
 `;
     }
 
@@ -588,4 +564,54 @@ Generate the complete benchmark script now based on the provided functions.
         this.outputChannel.appendLine('[extractFunctionCodeFromPrompt] Path 4: No function found in blocks or raw prompt. Returning undefined.');
         return undefined;
     }
-} 
+
+    /**
+     * Creates a prompt to ask the LLM to generate test inputs for a function.
+     */
+    private createInputGenerationPrompt(functionCode: string): string {
+        return `
+You are a test data generation assistant.
+Analyze the following JavaScript/TypeScript function:
+
+\`\`\`javascript
+${functionCode}
+\`\`\`
+
+**Your Task:**
+
+Generate a small JSON array containing 3-5 diverse test inputs suitable for calling this function. Consider:
+- Typical valid inputs.
+- Edge cases (e.g., empty arrays/strings, zero, null, undefined if applicable).
+- Different data types if the function seems flexible.
+
+**Output Format:**
+Provide your response *strictly* as a JSON array. Each element in the array represents the arguments for one function call. 
+- If the function takes one argument, each element is the argument value (e.g., \`[1, [], "test"]\`).
+- If the function takes multiple arguments, each element should be an array containing those arguments in the correct order (e.g., \`[[1, 2], [null, "a"], [10, undefined]]\`).
+- If the function takes no arguments, return an empty array \`[]\`
+
+**Example (Single Argument Function like sum(arr)):**
+\`\`\`json
+[
+  [1, 2, 3, 4, 5],
+  [],
+  [-1, 0, 1],
+  [1000000, 2000000]
+]
+\`\`\`
+
+**Example (Multi-Argument Function like add(a, b)):**
+\`\`\`json
+[
+  [1, 2],
+  [0, 0],
+  [-5, 5],
+  [10, null]
+]
+\`\`\`
+
+**IMPORTANT:** Output *only* the JSON array within a single \`\`\`json code block. Do not include any introductory text or explanations outside the JSON structure.
+Generate the JSON array of test inputs now.
+`;
+    }
+}

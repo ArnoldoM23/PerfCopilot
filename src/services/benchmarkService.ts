@@ -38,16 +38,21 @@ export class BenchmarkService {
      */
     public async runBenchmark(benchmarkCode: string): Promise<BenchmarkComparison> {
         try {
-            // Create a temporary file for the benchmark
-            this.outputChannel.appendLine('Creating temporary benchmark file...');
-            const tempFilePath = await createTempFile(benchmarkCode, 'perfcopilot-benchmark.js');
+            // Create a temporary file for the benchmark function/data code
+            this.outputChannel.appendLine('Creating temporary functions/data file...');
+            // Note: benchmarkCode now only contains functions and testData exports
+            const tempFuncFilePath = await createTempFile(benchmarkCode, 'perfcopilot-funcs.js');
             
-            // Ensure benny is installed locally
-            await this.ensureBennyInstalled(path.dirname(tempFilePath));
+            // Path to the permanent runner script
+            const runnerScriptPath = path.resolve(__dirname, '../utils/benchmarkRunner.js');
             
-            // Run the benchmark
-            this.outputChannel.appendLine(`Running benchmark at ${tempFilePath}...`);
-            const output = await runNodeScript(tempFilePath);
+            if (!fs.existsSync(runnerScriptPath)) {
+                throw new Error(`Benchmark runner script not found at ${runnerScriptPath}`);
+            }
+            
+            // Run the permanent runner script, passing the temp functions file path as an argument
+            this.outputChannel.appendLine(`Executing benchmark runner: ${runnerScriptPath} with ${tempFuncFilePath}`);
+            const output = await runNodeScript(runnerScriptPath, [tempFuncFilePath]); // Pass file path as arg
             
             // Log the raw output before parsing
             this.outputChannel.appendLine(`\n--- Raw Benchmark Script Output ---\n${output}\n----------------------------------\n`);
@@ -57,69 +62,6 @@ export class BenchmarkService {
             return this.parseBenchmarkResults(output);
         } catch (error) {
             this.outputChannel.appendLine(`Error running benchmark: ${error}`);
-            throw error;
-        }
-    }
-
-    /**
-     * Ensures the benny package is installed in the temporary directory.
-     * 
-     * @param tempDir - The temporary directory path
-     */
-    private async ensureBennyInstalled(tempDir: string): Promise<void> {
-        try {
-            // Create a package.json if it doesn't exist
-            const packageJsonPath = path.join(tempDir, 'package.json');
-            if (!fs.existsSync(packageJsonPath)) {
-                fs.writeFileSync(packageJsonPath, JSON.stringify({
-                    name: 'perfcopilot-benchmark',
-                    version: '1.0.0',
-                    private: true,
-                    dependencies: {
-                        'benny': '^3.7.1'
-                    }
-                }, null, 2));
-            }
-            
-            // Create a node_modules symlink to the extension's node_modules if possible
-            const extensionNodeModules = path.join(__dirname, '..', '..', 'node_modules');
-            const tempNodeModules = path.join(tempDir, 'node_modules');
-            
-            if (fs.existsSync(extensionNodeModules) && !fs.existsSync(tempNodeModules)) {
-                try {
-                    // Try to create a symbolic link
-                    fs.symlinkSync(extensionNodeModules, tempNodeModules, 'junction');
-                    return;
-                } catch (error) {
-                    this.outputChannel.appendLine(`Could not create symlink: ${error}`);
-                    // Fall back to npm install
-                }
-            }
-            
-            // Install benny using npm in the temporary directory
-            this.outputChannel.appendLine('Installing benny package...');
-            const { spawn } = require('child_process');
-            const npm = spawn(
-                process.platform === 'win32' ? 'npm.cmd' : 'npm',
-                ['install', '--no-fund', '--no-audit'],
-                { cwd: tempDir }
-            );
-            
-            return new Promise((resolve, reject) => {
-                npm.on('close', (code: number) => {
-                    if (code !== 0) {
-                        reject(new Error(`npm install exited with code ${code}`));
-                        return;
-                    }
-                    resolve();
-                });
-                
-                npm.on('error', (err: Error) => {
-                    reject(err);
-                });
-            });
-        } catch (error) {
-            this.outputChannel.appendLine(`Error ensuring benny is installed: ${error}`);
             throw error;
         }
     }
