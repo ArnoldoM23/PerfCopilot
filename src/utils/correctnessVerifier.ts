@@ -153,6 +153,7 @@ async function executeFunctionSafely(functionCode: string, args: any[]): Promise
     try {
         // Create a context for the VM script, passing arguments
         const context = { 
+            // eslint-disable-next-line @typescript-eslint/naming-convention
             __args: args,
             __functionCodeString: functionCode, // Pass the code string itself into the context
             // Add any other globals needed, carefully (e.g., console, Math)
@@ -161,6 +162,7 @@ async function executeFunctionSafely(functionCode: string, args: any[]): Promise
                 warn: () => {}, 
                 error: () => {}
             },
+            // eslint-disable-next-line @typescript-eslint/naming-convention
             Math: Math // Allow Math operations
             // Avoid adding Node.js globals like 'process', 'require' unless absolutely necessary
         };

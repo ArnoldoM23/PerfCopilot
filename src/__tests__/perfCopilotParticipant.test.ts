@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import { PerfCopilotParticipant } from '../perfCopilotParticipant';
 import { MockOutputChannel } from './mocks';
 import { BenchmarkService } from '../services/benchmarkService';
+import { verifyFunctionalEquivalence } from '../utils/correctnessVerifier';
 import { FunctionImplementation, BenchmarkComparison } from '../models/types';
 import { isValidJavaScriptFunction } from '../utils/functions';
 // Require the mock file instead of importing
@@ -32,6 +33,11 @@ jest.mock('../utils/functions', () => ({
     if (code.includes('function validFunc')) {return 'validFunc';}
     return code.includes('function') ? 'someFunction' : undefined;
   })
+}));
+
+// Mock the correctnessVerifier module
+jest.mock('../utils/correctnessVerifier', () => ({
+  verifyFunctionalEquivalence: jest.fn(),
 }));
 
 describe('PerfCopilotParticipant', () => {
@@ -168,6 +174,9 @@ describe('PerfCopilotParticipant', () => {
       const parseAlternativesSpy = jest.spyOn(participant as any, 'parseAlternativeImplementations')
         .mockReturnValueOnce(sampleAlternatives);
       
+      // Mock the correctness check to return the alternatives successfully
+      (verifyFunctionalEquivalence as jest.Mock).mockResolvedValue(sampleAlternatives);
+      
       // Mock the sequence of LLM responses
       mockLM.sendRequest
         .mockResolvedValueOnce({ // 1. Alternatives Response
@@ -201,6 +210,7 @@ describe('PerfCopilotParticipant', () => {
       // Verify the response was sent
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Function `findDuplicates` identified. Analyzing...'));
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Generated 2 alternative implementations.')); 
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ 2 alternatives passed correctness check.'));
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ AI generated benchmark code.')); 
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Benchmarks completed.')); 
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Performance Analysis')); 

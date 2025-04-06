@@ -5,6 +5,7 @@
 import { BenchmarkService } from '../services/benchmarkService';
 import { MockOutputChannel } from './mocks';
 import * as utils from '../utils/functions';
+import path from 'path';
 
 // Mock the vscode namespace
 jest.mock('vscode', () => ({
@@ -34,8 +35,14 @@ jest.mock('child_process', () => ({
 
 // Mock the functions
 jest.mock('../utils/functions', () => ({
-  createTempFile: jest.fn().mockResolvedValue('/tmp/perfcopilot/benchmark.js'),
-  runNodeScript: jest.fn().mockResolvedValue('')
+  createTempFile: jest.fn().mockResolvedValue('/tmp/temp-benchmark-file.js'),
+  // Mock runNodeScript to handle args
+  runNodeScript: jest.fn().mockImplementation((scriptPath, args) => {
+    // Return standard result, can be refined later if specific tests need different outputs
+    return Promise.resolve('RESULTS_JSON: { "fastest": "original", "results": [] }');
+  }),
+  isValidJavaScriptFunction: jest.fn().mockReturnValue(true), // Assume valid for these tests
+  extractFunctionName: jest.fn().mockReturnValue('testFunction')
 }));
 
 describe('BenchmarkService', () => {
@@ -87,41 +94,24 @@ describe('BenchmarkService', () => {
   });
   
   describe('runBenchmark', () => {
+    // Sample benchmark code (NOW simplified: just functions and data)
+    const functionsAndDataCode = `\n// Implementation for: Original\nfunction originalFn(arr) { return arr[0]; }\n\n// Implementation for: Alt 1\nconst alternative1Fn = (arr) => arr[0];\n\nconst testData = [1, 2, 3];\nmodule.exports = { testData, originalFn, alternative1Fn };\n`;
+
     it('should create a temporary file and run the benchmark', async () => {
-      // Setup the runNodeScript mock to return a valid result
-      const benchmarkOutput = `
-        Find Duplicates
-        original x 1,234,567 ops/sec ±0.12% (95 runs sampled)
-        alternative x 2,345,678 ops/sec ±0.23% (95 runs sampled)
-        Fastest is alternative
-      `;
-      (utils.runNodeScript as jest.Mock).mockResolvedValue(benchmarkOutput);
-      
-      // Run the benchmark
-      const result = await benchmarkService.runBenchmark(benchmarkCode);
-      
-      // Verify createTempFile was called with the benchmark code
+      await benchmarkService.runBenchmark(functionsAndDataCode);
+
+      // Verify createTempFile was called with the functions/data code and correct filename
       expect(utils.createTempFile).toHaveBeenCalledWith(
-        benchmarkCode, 
-        'perfcopilot-benchmark.js'
+        functionsAndDataCode, 
+        'perfcopilot-funcs.js' // <-- Updated filename
       );
-      
-      // Verify runNodeScript was called with the correct file path
-      expect(utils.runNodeScript).toHaveBeenCalledWith('/tmp/perfcopilot/benchmark.js');
-      
-      // Verify the result has the correct structure
-      expect(result).toHaveProperty('fastest');
-      expect(result).toHaveProperty('results');
-      
-      // Verify the fastest implementation was identified
-      expect(result.fastest).toBe('alternative');
-      
-      // Verify the results array contains parsed data for both implementations
-      expect(result.results).toHaveLength(2);
-      expect(result.results).toEqual(expect.arrayContaining([
-          expect.objectContaining({ name: 'original', ops: 1234567 }),
-          expect.objectContaining({ name: 'alternative', ops: 2345678 }),
-      ]));
+
+      // Verify runNodeScript was called with the runner script and the temp file path
+      const expectedRunnerPath = path.resolve(__dirname, '..\/utils\/benchmarkRunner.js');
+      expect(utils.runNodeScript).toHaveBeenCalledWith(
+        expectedRunnerPath,
+        ['/tmp/temp-benchmark-file.js'] // <-- Mocked path from createTempFile
+      );
     });
     
     it('should handle JSON formatted results', async () => {
