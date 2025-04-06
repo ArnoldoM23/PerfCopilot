@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import { BenchmarkService } from './services/benchmarkService';
 import { FunctionImplementation } from './models/types';
 import { isValidJavaScriptFunction, extractFunctionName } from './utils/functions';
+import { verifyFunctionalEquivalence } from './utils/correctnessVerifier';
 
 // Define the participant ID
 const PERF_COPILOT_PARTICIPANT_ID = 'perfcopilot';
@@ -189,6 +190,42 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 }
                  response.markdown(`✅ Generated ${alternatives.length} alternative implementations.`);
 
+                 // --- Add Correctness Check --- 
+                 response.progress('Verifying functional correctness...');
+                 let verifiedAlternatives: FunctionImplementation[] = [];
+                 try {
+                     verifiedAlternatives = await verifyFunctionalEquivalence(
+                         originalFunction, 
+                         alternatives, 
+                         languageModel, 
+                         this.createInputGenerationPrompt.bind(this), // Pass the prompt generator function
+                         this.outputChannel,
+                         token
+                     );
+
+                     if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
+
+                     if (verifiedAlternatives.length < alternatives.length) {
+                         response.markdown(`ℹ️ Rejected ${alternatives.length - verifiedAlternatives.length} alternatives due to incorrect results.`);
+                     }
+                     if (verifiedAlternatives.length === 0) {
+                         response.markdown('🔴 **Error:** No alternative implementations passed the functional correctness check. Cannot proceed with benchmarking.');
+                         return { metadata: { error: 'All alternatives failed correctness check.' } };
+                     }
+                     response.markdown(`✅ ${verifiedAlternatives.length} alternatives passed correctness check.`);
+
+                 } catch (error: any) {
+                     if (token.isCancellationRequested) { 
+                         response.markdown("Operation cancelled by user.");
+                         return {}; 
+                     }
+                     this.outputChannel.appendLine(`Error during functional verification: ${error.message}`);
+                     response.markdown(`⚠️ **Warning:** Could not verify functional correctness due to an error: ${error.message}. Proceeding with all generated alternatives.`);
+                     // Fallback: Use original alternatives if verification fails unexpectedly
+                     verifiedAlternatives = alternatives; 
+                 }
+                 // --- End Correctness Check ---
+
                  if (token.isCancellationRequested) {
                     response.markdown("Operation cancelled by user.");
                     return {};
@@ -197,7 +234,8 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 response.progress('Generating benchmark code via AI...');
                 let benchmarkCode: string | undefined;
                 try {
-                    const benchmarkPrompt = this.createBenchmarkPrompt(originalFunction, alternatives);
+                    // Use only verified alternatives for benchmarking
+                    const benchmarkPrompt = this.createBenchmarkPrompt(originalFunction, verifiedAlternatives);
                     const benchmarkMessages = [vscode.LanguageModelChatMessage.User(benchmarkPrompt)];
                     let benchmarkResponseText = '';
                     const benchmarkRequest = await languageModel.sendRequest(benchmarkMessages, {}, token);
@@ -255,7 +293,8 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 }
 
                 response.progress('Analyzing benchmark results with AI...');
-                const explanationPrompt = this.createExplanationPrompt(originalFunction, alternatives, benchmarkResults);
+                // Use only verified alternatives for the final explanation
+                const explanationPrompt = this.createExplanationPrompt(originalFunction, verifiedAlternatives, benchmarkResults);
                 const explanationMessages = [vscode.LanguageModelChatMessage.User(explanationPrompt)];
                 
                 try {
