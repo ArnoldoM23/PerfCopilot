@@ -69,6 +69,7 @@
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "test": "jest",
+    "test:coverage": "jest --coverage",
     "test:functions": "jest src/__tests__/functions.test.ts",
     "test:services": "jest src/__tests__/benchmarkService.test.ts src/__tests__/copilotChatService.test.ts",
     "test:extension": "jest src/__tests__/extension.test.ts",

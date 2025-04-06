@@ -11,6 +11,7 @@ module.exports = {
         'src/**/*.ts',
         '!src/**/*.d.ts',
         '!src/test/**',
+        '!src/__tests__/**',
         '!**/node_modules/**',
     ],
     coverageReporters: ['text', 'lcov'],

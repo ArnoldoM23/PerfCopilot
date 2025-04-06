@@ -149,7 +149,7 @@ export async function verifyFunctionalEquivalence(
  * @returns The result of the function execution.
  * @throws If the code cannot be compiled or execution fails.
  */
-async function executeFunctionSafely(functionCode: string, args: any[]): Promise<any> {
+export async function executeFunctionSafely(functionCode: string, args: any[]): Promise<any> {
     try {
         // Create a context for the VM script, passing arguments
         const context = { 
