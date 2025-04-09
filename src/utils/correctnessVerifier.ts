@@ -27,6 +27,12 @@ export async function verifyFunctionalEquivalence(
 
     outputChannel.appendLine('[CorrectnessVerifier] Starting functional equivalence check...');
 
+    // Add initial cancellation check
+    if (token.isCancellationRequested) {
+        outputChannel.appendLine("[CorrectnessVerifier] Cancellation requested before verification could start.");
+        return [];
+    }
+
     let testInputs: any[] = [];
 
     // 1. Generate Test Inputs using LLM
@@ -42,6 +48,10 @@ export async function verifyFunctionalEquivalence(
             responseText += chunk;
         }
 
+        // --- Debugging Log ---
+        console.log('[DEBUG] Raw responseText before regex:', JSON.stringify(responseText)); 
+        // --- End Debugging Log ---
+
         // Use a regex that matches a JSON array block potentially containing data
         const jsonBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
         const match = responseText.match(jsonBlockRegex);
@@ -56,26 +66,26 @@ export async function verifyFunctionalEquivalence(
                     outputChannel.appendLine(`[CorrectnessVerifier] Successfully parsed ${testInputs.length} test inputs.`);
                 } catch (parseError: any) {
                     outputChannel.appendLine(`[CorrectnessVerifier] Error parsing extracted JSON: ${parseError.message}. Content: ${potentialJson}`);
-                    return alternatives; // Skip verification on parse error
+                    return []; // Skip verification on parse error
                 }
             } else {
                 outputChannel.appendLine(`[CorrectnessVerifier] Extracted block doesn\'t look like a JSON array. Content: ${potentialJson}`);
-                return alternatives; // Skip verification if content isn\'t an array
+                return []; // Skip verification if content isn\'t an array
             }
         } else {
             outputChannel.appendLine('[CorrectnessVerifier] Could not extract JSON test inputs from LLM response. Skipping correctness check.');
-            return alternatives; // Skip verification if inputs aren't generated
+            return []; // Skip verification if inputs aren't generated
         }
     } catch (error: any) {
         outputChannel.appendLine(`[CorrectnessVerifier] Error generating/parsing test inputs: ${error.message}. Skipping correctness check.`);
-        return alternatives; // Skip verification on error
+        return []; // Skip verification on error
     }
 
     if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
 
     if (testInputs.length === 0) {
         outputChannel.appendLine('[CorrectnessVerifier] No test inputs generated. Skipping correctness check.');
-        return alternatives;
+        return [];
     }
 
     // 2. Execute Original Function to get Expected Outputs
@@ -152,9 +162,10 @@ export async function verifyFunctionalEquivalence(
 export async function executeFunctionSafely(functionCode: string, args: any[]): Promise<any> {
     try {
         // Create a context for the VM script, passing arguments
-        const context = { 
+        const context = {
             // eslint-disable-next-line @typescript-eslint/naming-convention
             __args: args,
+            // eslint-disable-next-line @typescript-eslint/naming-convention
             __functionCodeString: functionCode, // Pass the code string itself into the context
             // Add any other globals needed, carefully (e.g., console, Math)
             console: {
@@ -163,7 +174,9 @@ export async function executeFunctionSafely(functionCode: string, args: any[]): 
                 error: () => {}
             },
             // eslint-disable-next-line @typescript-eslint/naming-convention
-            Math: Math // Allow Math operations
+            Math: Math, // Allow Math operations
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            __result: undefined // Add a variable to store the result
             // Avoid adding Node.js globals like 'process', 'require' unless absolutely necessary
         };
         vm.createContext(context); // Contextify the object
@@ -178,7 +191,8 @@ export async function executeFunctionSafely(functionCode: string, args: any[]): 
                 // If the above fails (e.g., it's a statement like 'function name(){...}'), try evaluating directly
                 try {
                     vm.runInContext(__functionCodeString, context); // Evaluate declaration
-                    const funcNameMatch = __functionCodeString.match(/^(?:async\\s+)?function\\s+([a-zA-Z_$][\\w$]*)/);
+                    // eslint-disable-next-line @typescript-eslint/naming-convention
+                    const funcNameMatch = __functionCodeString.match(/^(?:async\s+)?function\s+([a-zA-Z_$][\w$]*)/);
                     if (!funcNameMatch) throw new Error('Could not find function name after direct evaluation');
                     __fn = context[funcNameMatch[1]]; // Get the function from the context
                 } catch (e2) {
@@ -188,14 +202,16 @@ export async function executeFunctionSafely(functionCode: string, args: any[]): 
             if (typeof __fn !== 'function') {
                 throw new Error('Provided code did not resolve to a function.');
             }
-            __fn(...__args); // Execute the function
+            // Execute the function and store result
+            __result = __fn(...__args);
         `;
 
         // Compile and run the script in the isolated context
         const script = new vm.Script(scriptContent);
-        const result = script.runInContext(context, { timeout: 2000 }); // Increase timeout slightly
-        return result;
-    } catch (error: any) { 
-        throw new Error(`Execution failed: ${error.message}`);
+        script.runInContext(context, { timeout: 2000 }); // Increase timeout slightly
+        return context.__result; // Return the stored result
+    } catch (error) { 
+        // Re-throw the original error from the script execution
+        throw error;
     }
 } 
