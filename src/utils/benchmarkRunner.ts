@@ -5,6 +5,7 @@
 const benny = require('benny');
 const path = require('path');
 const fs = require('fs');
+const vm = require('vm');
 
 // Get the path to the file containing functions and testData from command line arguments
 const functionsFilePath = process.argv[2];
@@ -19,7 +20,7 @@ if (!fs.existsSync(functionsFilePath)) {
   process.exit(1);
 }
 
-let loadedFunctions: Record<string, any>;
+let loadedModule: Record<string, any>;
 try {
   // Require the dynamically generated file
   const requiredModule = require(path.resolve(functionsFilePath));
@@ -27,38 +28,29 @@ try {
   if (typeof requiredModule !== 'object' || requiredModule === null) {
       throw new Error('Module did not export an object.');
   }
-  loadedFunctions = requiredModule as Record<string, any>;
+  loadedModule = requiredModule as Record<string, any>;
 } catch (error) {
   console.error(`BENCHMARK_ERROR: Failed to load functions from ${functionsFilePath}: ${error}`);
   process.exit(1);
 }
 
-// Validate required exports from the loaded file
-if (!('testData' in loadedFunctions)) {
-    // Allow null/undefined testData if functions don't take params
-    // console.warn('Warning: testData not found in loaded functions file.');
-    loadedFunctions.testData = undefined; // Ensure it exists
+// Validate required exports from the loaded module
+if (!loadedModule.entryPointName || typeof loadedModule.entryPointName !== 'string' ||
+    loadedModule.testData === undefined || // Allow null/undefined for testData
+    !loadedModule.implementations || typeof loadedModule.implementations !== 'object') {
+    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing required exports (entryPointName, testData, implementations).`);
+    process.exit(1);
 }
 
-// Find all exported functions matching the expected pattern (e.g., originalFn, alternative1Fn)
-const functionCases = Object.keys(loadedFunctions)
-  .filter(key => typeof loadedFunctions[key] === 'function' && key.match(/^(original|alternative\d+)Fn$/))
-  .map(key => {
-    // Map the internal function name (e.g., 'alternative1Fn') to the display name (e.g., 'Alternative 1')
-    let displayName = 'Unknown';
-    if (key === 'originalFn') {
-        displayName = 'Original';
-    } else {
-        const match = key.match(/^alternative(\d+)Fn$/);
-        if (match && match[1]) {
-            displayName = `Alternative ${match[1]}`;
-        }
-    }
-    return { name: displayName, fn: loadedFunctions[key], fnKey: key };
-  });
+const entryPointName = loadedModule.entryPointName;
+const testData = loadedModule.testData;
+const implementations = loadedModule.implementations as Record<string, string>; // Object with { 'Original': 'code...', 'Alternative 1': 'code...' }
 
-if (functionCases.length === 0) {
-  console.error(`BENCHMARK_ERROR: No valid benchmark functions (originalFn, alternative*Fn) found in ${functionsFilePath}`);
+// Find all implementation keys (e.g., 'Original', 'Alternative 1')
+const implementationKeys = Object.keys(implementations);
+
+if (implementationKeys.length === 0) {
+  console.error(`BENCHMARK_ERROR: No implementations found in the loaded module from ${functionsFilePath}`);
   process.exit(1);
 }
 
@@ -66,10 +58,41 @@ if (functionCases.length === 0) {
 try {
     const suite = benny.suite(
         'Function Performance Benchmark',
-        ...functionCases.map(fCase => 
-            benny.add(fCase.name, () => {
-                // Call the specific function using the key from the loaded module
-                loadedFunctions[fCase.fnKey](loadedFunctions.testData);
+        // Map over implementation keys ('Original', 'Alternative 1', ...)
+        ...implementationKeys.map(implKey => 
+            benny.add(implKey, () => {
+                // For each benchmark case, create a *new* isolated context
+                const context = {
+                    __testData: testData,
+                    __entryPointName: entryPointName,
+                    // Add necessary globals (e.g., console, Math)
+                    console: {
+                        log: () => {}, warn: () => {}, error: () => {}
+                    },
+                    Math: Math
+                    // DO NOT pass the implementation code string here
+                };
+                vm.createContext(context);
+
+                try {
+                    // Run the full code for THIS implementation inside the context
+                    vm.runInContext(implementations[implKey], context, { timeout: 1000 });
+
+                    // Get the entry point function *from the context*
+                    const entryFn = (context as any)[entryPointName];
+                    if (typeof entryFn !== 'function') {
+                        // Throw error specific to this case if function not found *after* running code
+                        throw new Error(`Entry point function '${entryPointName}' not found in context for implementation '${implKey}'.`);
+                    }
+
+                    // Execute the entry point function with the test data
+                    entryFn(testData);
+                } catch (execError) {
+                     // Catch errors during runInContext or function execution within the benchmark case
+                     console.error(`BENCHMARK_EXECUTION_ERROR [${implKey}]: ${execError}`);
+                     // Allow benny to potentially proceed, but log the error clearly.
+                     // Alternatively, re-throw to stop the suite: throw execError;
+                }
             })
         ),
         benny.cycle(),

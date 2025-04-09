@@ -160,58 +160,93 @@ export async function verifyFunctionalEquivalence(
  * @throws If the code cannot be compiled or execution fails.
  */
 export async function executeFunctionSafely(functionCode: string, args: any[]): Promise<any> {
-    try {
-        // Create a context for the VM script, passing arguments
-        const context = {
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            __args: args,
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            __functionCodeString: functionCode, // Pass the code string itself into the context
-            // Add any other globals needed, carefully (e.g., console, Math)
-            console: {
-                log: () => {}, // Suppress console.log within the function
-                warn: () => {}, 
-                error: () => {}
-            },
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            Math: Math, // Allow Math operations
-            // eslint-disable-next-line @typescript-eslint/naming-convention
-            __result: undefined // Add a variable to store the result
-            // Avoid adding Node.js globals like 'process', 'require' unless absolutely necessary
-        };
-        vm.createContext(context); // Contextify the object
+    // Create a context for the VM script, passing arguments
+    const context = {
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        __args: args,
+        // Add any other globals needed, carefully (e.g., Math)
+        console: {
+            log: () => {}, // Suppress console.log within the function
+            warn: () => {},
+            error: () => {}
+        },
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        Math: Math,
+        // eslint-disable-next-line @typescript-eslint/naming-convention
+        __result: undefined, // Variable to store the result
+        // Pass vm module itself ONLY if absolutely necessary for advanced sandboxing cases,
+        // but generally avoid it. Avoid other Node.js globals like 'process', 'require'.
+    };
+    vm.createContext(context); // Contextify the object
 
-        // Script that uses Function constructor inside the VM to create and run the function
-        const scriptContent = `
-            let __fn;
-            try {
-                // Use Function constructor for potentially safer evaluation within the VM context
-                __fn = new Function('return (' + __functionCodeString + ')')();
-            } catch (e1) {
-                // If the above fails (e.g., it's a statement like 'function name(){...}'), try evaluating directly
-                try {
-                    vm.runInContext(__functionCodeString, context); // Evaluate declaration
-                    // eslint-disable-next-line @typescript-eslint/naming-convention
-                    const funcNameMatch = __functionCodeString.match(/^(?:async\s+)?function\s+([a-zA-Z_$][\w$]*)/);
-                    if (!funcNameMatch) throw new Error('Could not find function name after direct evaluation');
-                    __fn = context[funcNameMatch[1]]; // Get the function from the context
-                } catch (e2) {
-                    throw new Error('Could not create function from code string: ' + e1.message + ' / ' + e2.message);
-                }
-            }
-            if (typeof __fn !== 'function') {
-                throw new Error('Provided code did not resolve to a function.');
-            }
-            // Execute the function and store result
-            __result = __fn(...__args);
+    let targetFunctionName: string | undefined;
+    let isAsync = false;
+
+    try {
+        // Step 1: Run the entire user code in the context to define functions
+        // Use a timeout to prevent infinite loops in the user code itself during definition.
+        vm.runInContext(functionCode, context, { timeout: 1000 });
+
+        // Step 2: Identify the primary function to execute
+        // Attempt to find the *first* declared function or assigned arrow function
+        // This is a limitation: assumes the first function is the entry point.
+        const functionNameMatch = functionCode.match(/(?:async\s+)?(?:function|const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)/);
+        const arrowFunctionNameMatch = functionCode.match(/^(?:const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)\s*=\s*(?:async\s*)?\(/);
+
+        if (functionNameMatch && functionNameMatch[1]) {
+            targetFunctionName = functionNameMatch[1];
+             isAsync = /async\s+function/.test(functionCode.substring(0, functionNameMatch[0].length + functionNameMatch[1].length + 10)); // Check if async keyword precedes function
+        } else if (arrowFunctionNameMatch && arrowFunctionNameMatch[1]) {
+             targetFunctionName = arrowFunctionNameMatch[1];
+             isAsync = /=\s*async\s*\(/.test(functionCode.substring(0, arrowFunctionNameMatch[0].length + arrowFunctionNameMatch[1].length + 15)); // Check if async keyword precedes arrow func
+        } else {
+             // Fallback: Maybe it's an immediately exported anonymous function or similar?
+             // Try a broader regex, less reliable.
+             const broaderMatch = functionCode.match(/^(?:module\.exports\s*=\s*)?(?:async\s+)?function\s*\(/);
+             if (broaderMatch) {
+                 // Difficult to get a name here, execution needs different approach if truly anonymous.
+                 // For now, let's throw, as our primary mechanism needs a name.
+                  throw new Error('Could not reliably determine the target function name to execute.');
+             } else {
+                  throw new Error('Could not find a function declaration or assignment to execute.');
+             }
+        }
+        
+        // Ensure targetFunctionName is defined before using it as index
+        if (!targetFunctionName) {
+            throw new Error('Failed to identify target function name.');
+        }
+        if (typeof (context as any)[targetFunctionName] !== 'function') {
+            throw new Error(`Target function '${targetFunctionName}' was not defined or is not a function after evaluating the code.`);
+        }
+
+        // Step 3: Construct and run a script to CALL the target function
+        // Use an async IIFE if the target function is async
+        const callScriptContent = `
+            (async () => {
+                // Double check function exists in context just before calling
+                if (typeof ${(context as any)[targetFunctionName!] ? targetFunctionName : 'undefined'} !== 'function') {
+                     throw new Error('Target function ${targetFunctionName} disappeared from context');
+                 }
+                __result = ${isAsync ? 'await ' : ''}${targetFunctionName}(...__args);
+            })();
         `;
 
-        // Compile and run the script in the isolated context
-        const script = new vm.Script(scriptContent);
-        script.runInContext(context, { timeout: 2000 }); // Increase timeout slightly
+        const callScript = new vm.Script(callScriptContent, { filename: 'executionScript.js' });
+        // Use a separate timeout for the actual execution.
+        // Needs to be awaited because the script runs an async IIFE.
+        // Removed microtaskMode as it caused linting error
+        await callScript.runInContext(context, { timeout: 2000 }); 
+
         return context.__result; // Return the stored result
-    } catch (error) { 
-        // Re-throw the original error from the script execution
-        throw error;
+
+    } catch (error: any) {
+        // Improve error reporting
+        const errorMessage = `Execution failed: ${error.message}${targetFunctionName ? ` (targeting function: ${targetFunctionName})` : ''}`;
+        console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack); // Log stack trace too
+        // Re-throw a new error with combined info, preserving original stack if possible
+        const executionError = new Error(errorMessage);
+        executionError.stack = error.stack || executionError.stack; // Preserve original stack if available
+        throw executionError;
     }
 } 
