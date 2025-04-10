@@ -1,52 +1,94 @@
-import { suite, add, cycle, complete } from 'benny';
+const benny = require('benny');
 
-// ---------------
-// Function 1: Medium slow (nested sums)
-function slowSumMedium(n) {
-  let total = 0;
-  for (let i = 0; i < n; i++) {
-    total += (i + 1) * (i + 2) / 2;
-  }
-  return total;
-}
+// Original implementation
+function naiveFactorialOriginal(n) {
+  if (n < 0) {throw new Error('Cannot compute factorial of negative numbers.');}
+  if (n === 0 || n === 1) {return 1;}
 
-// ---------------
-// Function 2: Fast (direct formula)
-function slowSumFast(n) {
-  return (n * (n + 1) * (n + 2)) / 6;
-}
-
-// ---------------
-// Function 3: Extremely slow (triple nested loops)
-function slowSumVerySlow(n) {
-  let total = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j <= i; j++) {
-      for (let k = 0; k <= j; k++) {
-        total += 1;
-      }
+  let result = 1;
+  for (let i = 2; i <= n; i++) {
+    let intermediate = 0;
+    for (let j = 0; j < i; j++) {
+      intermediate += result; // Repeated addition
     }
+    result = intermediate;
   }
-  return total;
+
+  return result;
 }
 
-// ---------------
-// Run Benchmark Suite
-await suite(
-  'Slow Sum Benchmarks',
+function processNumbersOriginal(numbers) {
+  const results = [];
+  for (const num of numbers) {
+    const fact = naiveFactorialOriginal(num);
+    results.push({
+      original: num,
+      factorial: fact,
+    });
+  }
+  return results;
+}
 
-  add('slowSumMedium (nested sums)', () => {
-    slowSumMedium(100);
+// Alternate 1: Direct multiplication
+function naiveFactorialAlt1(n) {
+  if (n < 0) {throw new Error('Cannot compute factorial of negative numbers.');}
+  if (n === 0 || n === 1) {return 1;}
+
+  let result = 1;
+  for (let i = 2; i <= n; i++) {
+    result *= i;
+  }
+
+  return result;
+}
+
+function processNumbersAlt1(numbers) {
+  const results = [];
+  for (const num of numbers) {
+    const fact = naiveFactorialAlt1(num);
+    results.push({
+      original: num,
+      factorial: fact,
+    });
+  }
+  return results;
+}
+
+// Alternate 2: Using Array and reduce
+function naiveFactorialAlt2(n) {
+  if (n < 0) {throw new Error('Cannot compute factorial of negative numbers.');}
+  if (n === 0 || n === 1) {return 1;}
+
+  return Array.from({ length: n }, (_, i) => i + 1).reduce((acc, val) => acc * val, 1);
+}
+
+function processNumbersAlt2(numbers) {
+  return numbers.map(num => ({
+    original: num,
+    factorial: naiveFactorialAlt2(num),
+  }));
+}
+
+// Benchmark suite
+benny.suite(
+  'processNumbers Performance',
+
+  // Benchmark Original implementation
+  benny.add('Original (numbers=[5, 10, 15])', () => {
+    processNumbersOriginal([5, 10, 15]);
   }),
 
-  add('slowSumFast (direct formula)', () => {
-    slowSumFast(100);
+  // Benchmark Alternate 1
+  benny.add('Alternate 1 (numbers=[5, 10, 15])', () => {
+    processNumbersAlt1([5, 10, 15]);
   }),
 
-  add('slowSumVerySlow (triple nested loops)', () => {
-    slowSumVerySlow(100);
+  // Benchmark Alternate 2
+  benny.add('Alternate 2 (numbers=[5, 10, 15])', () => {
+    processNumbersAlt2([5, 10, 15]);
   }),
 
-  cycle(),
-  complete()
+  // Output results
+  benny.cycle(),
+  benny.complete(),
 );

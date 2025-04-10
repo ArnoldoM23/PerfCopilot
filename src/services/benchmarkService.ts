@@ -187,4 +187,80 @@ export class BenchmarkService {
             results
         };
     }
+
+    /**
+     * Helper function to replace the definition and internal recursive calls of a function.
+     * 
+     * @param code - The string containing the function code.
+     * @param originalName - The original name of the function.
+     * @param newName - The new name to assign to the function.
+     * @returns The modified code string with the function renamed and recursive calls updated.
+     */
+    public replaceRecursiveCalls(code: string, originalName: string, newName: string): string {
+        // This helper transforms a code snippet defining a function named `originalName`
+        // into one defining a function named `newName`, ensuring internal recursive
+        // calls to `originalName` are also replaced with `newName`.
+
+        try {
+            // 1. Find the main function definition (const/function originalName ...)
+            //    Use a regex that captures the declaration type (const/function) and the rest (signature/body)
+            //    Regex breakdown:
+            //    - `(const\\s+|function\\s+)`: Capture group 1: "const " or "function "
+            //    - `(${originalName})`: Capture group 2: The original function name
+            //    - `(\\s*=|\\s*\\()`: Capture group 3: Start of assignment/params (" =" or " (")
+            const definitionRegex = new RegExp(`(const\\s+|function\\s+)(${originalName})(\\s*=|\\s*\\()`);
+            const match = code.match(definitionRegex);
+
+            if (!match || match.index === undefined) {
+                // Try to handle anonymous arrow functions assigned to a const
+                const arrowAssignRegex = new RegExp(`(const\\s+)(${originalName})(\\s*=\\s*\\()`);
+                const arrowMatch = code.match(arrowAssignRegex);
+                if(arrowMatch && arrowMatch.index !== undefined){
+                     // If it's `const originalName = (params) => ...`
+                     // Rename the const declaration
+                    let definitionReplacedCode = code.substring(0, arrowMatch.index) +
+                                            `const ${newName}` +
+                                            code.substring(arrowMatch.index + `const ${originalName}`.length);
+
+                    // Replace recursive calls within the body using a careful regex
+                    // Look for `originalName(` not preceded by `.` or alphanumeric chars (avoid obj.method)
+                    const recursiveCallRegex = new RegExp(`(?<![.\\w])\\b${originalName}\\s*\\(`, 'g');
+                    const finalCode = definitionReplacedCode.replace(recursiveCallRegex, `${newName}(`);
+                    return finalCode;
+
+                } else {
+                    this.outputChannel.appendLine(`Warning: Could not find standard function definition for "${originalName}" in provided code. Recursive calls may not be correctly handled for "${newName}". Returning code mostly unmodified.`);
+                    // Fallback: Attempt to wrap or assign, but this is risky.
+                    // Let's just return it assigned to the new name, hoping it's an expression.
+                    return `const ${newName} = ${code};`;
+                }
+            }
+
+            // 2. Rename the function in the definition line
+            // Reconstruct the start of the code with the new name
+            let definitionReplacedCode = code.substring(0, match.index) + // Code before definition
+                                         match[1] +                     // "const " or "function "
+                                         newName +                      // The new function name
+                                         code.substring(match.index + match[1].length + match[2].length); // Rest of the code
+
+            // 3. Replace recursive calls *within* the function body
+            // Use a regex that finds `originalName(` but avoids matching inside strings or comments (best effort without AST)
+            // Look for `originalName(` not preceded by `.` or alphanumeric chars (avoid obj.method)
+            const recursiveCallRegex = new RegExp(`(?<![.\\w])\\b${originalName}\\s*\\(`, 'g');
+            // Apply replacement to the code *after* definition rename
+            const finalCode = definitionReplacedCode.replace(recursiveCallRegex, `${newName}(`);
+
+            return finalCode;
+        } catch (error: any) {
+            this.outputChannel.appendLine(`Error during recursive call replacement for ${newName}: ${error.message}`);
+            // Return a placeholder function to avoid crashing the runner
+            return `const ${newName} = () => { throw new Error('Error processing code for ${newName}: ${error.message}'); };`;
+        }
+    }
+
+    // **Potential Issue:** How are recursive calls handled?
+    // We need to replace calls to `entryPoint` within each function body
+    // with calls to the new sanitized name for that specific implementation.
+
+    // Process Original Function
 }

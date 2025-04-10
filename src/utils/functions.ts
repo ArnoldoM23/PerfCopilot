@@ -132,6 +132,12 @@ export function extractFunctionName(functionCode: string): string | undefined {
     if (arrowFuncMatch) {
         return arrowFuncMatch[1];
     }
+
+    // Try to match function expressions: const name = function(...) {...}
+    const funcExpressionMatch = functionCode.match(/(?:const|let|var)\s+([a-zA-Z_$][\w$]*)\s*=\s*(?:async\s*)?function\s*\(/);
+    if (funcExpressionMatch) {
+        return funcExpressionMatch[1];
+    }
     
     // Try to match method definitions: name(...) {...}
     const methodMatch = functionCode.match(/^\s*([a-zA-Z_$][\w$]*)\s*\(/m);

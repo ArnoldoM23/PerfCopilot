@@ -119,7 +119,6 @@ describe('PerfCopilotParticipant', () => {
     participant = new PerfCopilotParticipant(
         mockOutputChannel as any, 
         mockBenchmarkService
-        
     );
     
     // Access the private createRequestHandler method using type assertion
@@ -169,25 +168,56 @@ describe('PerfCopilotParticipant', () => {
         variables: []
       };
       
-      // Mock the parseAlternativeImplementations method to return our sample alternatives
-      // This ensures we don't depend on the LLM response parsing logic in this test
-      const parseAlternativesSpy = jest.spyOn(participant as any, 'parseAlternativeImplementations')
-        .mockReturnValueOnce(sampleAlternatives);
-      
-      // Mock the correctness check to return the alternatives successfully
-      (verifyFunctionalEquivalence as jest.Mock).mockResolvedValue(sampleAlternatives);
-      
       // Mock the sequence of LLM responses
+      // Define the async generators separately
+      async function* mockAlternativesGenerator() {
+        const alt1CodeBlock = '```javascript\\n' + sampleAlternatives[0].code + '\\n```';
+        const alt2CodeBlock = '```javascript\\n' + sampleAlternatives[1].code + '\\n```';
+        const responseString = `Here are two alternatives:\\n${alt1CodeBlock}\\n\\nAnd another one:\\n${alt2CodeBlock}`;
+        yield responseString;
+      }
+
+      async function* mockBenchmarkConfigGenerator() {
+        const benchmarkConfig = {
+          entryPointName: "findDuplicates",
+          testData: [[1,2,3,2,4,5,4]],
+          implementations: {
+            "Original": sampleFunction,
+            [sampleAlternatives[0].name]: sampleAlternatives[0].code,
+            [sampleAlternatives[1].name]: sampleAlternatives[1].code,
+          }
+        };
+        const jsonString = '```json\\n' + JSON.stringify(benchmarkConfig, null, 2) + '\\n```';
+        yield jsonString;
+      }
+
+      async function* mockInputGenerator() {
+        const testInputs = [[[1, 2, 2, 3]], [[5, 5, 5]], [[]]];
+        const jsonString = '```json\\n' + JSON.stringify(testInputs) + '\\n```';
+        yield jsonString;
+      }
+
+      async function* mockExplanationGenerator() {
+        const explanationString = '# Performance Analysis\n**Summary:** Alternative 1 was fastest.\n**Benchmark Results:** ...\n**Explanation:** ...\n**Fastest Implementation:** ...';
+        yield explanationString;
+      }
+      
       mockLM.sendRequest
-        .mockResolvedValueOnce({ // 1. Alternatives Response
-          text: (async function*() { yield `\`\`\`json\n${JSON.stringify(sampleAlternatives, null, 2)}\n\`\`\``; })()
-        })
-        .mockResolvedValueOnce({ // 2. Benchmark Code Response
-          text: (async function*() { yield '```javascript\\nconst benny = require("benny");\\nconst testData = [1,2,3,2,4,5,4];\\nfunction originalFn(arr){ return arr.filter((i,idx)=>arr.indexOf(i)!==idx); }\\nfunction alternative1Fn(arr){ return [...new Set(arr.filter(i => arr.indexOf(i) !== arr.lastIndexOf(i)))]; }\\nfunction alternative2Fn(arr){ const s=new Set(),d=new Set();for(const i of arr){if(s.has(i))d.add(i);s.add(i);} return [...d]; }\\nbenny.suite("Benchmark", benny.add("Original",()=>{originalFn(testData);}), benny.add("Alternative 1",()=>{alternative1Fn(testData);}), benny.add("Alternative 2",()=>{alternative2Fn(testData);}), benny.cycle(), benny.complete((s)=>{ const r=s.results.map(res=>({name:res.name, ops:res.ops})); const f=s.results.find(res=>res.rank===1)?.name||\'Unknown\'; console.log(\'RESULTS_JSON: \' + JSON.stringify({results:r, fastest:f})); }));\\n```'; })()
-        })
-        .mockResolvedValueOnce({ // 3. Explanation Response
-          text: (async function*() { yield '# Performance Analysis\\n**Summary:** Alternative 1 was fastest.\\n**Benchmark Results:** ...\\n**Explanation:** ...\\n**Fastest Implementation:** ...'; })()
-        });
+        .mockResolvedValueOnce({ text: mockAlternativesGenerator() })
+        .mockResolvedValueOnce({ text: mockBenchmarkConfigGenerator() })
+        .mockResolvedValueOnce({ text: mockInputGenerator() })
+        .mockResolvedValueOnce({ text: mockExplanationGenerator() });
+
+      // Mock benchmarkService.runBenchmark to return successful results with sanitized keys
+      // Assuming correctness check passes Alternative 1 but rejects Alternative 2
+      mockBenchmarkService.runBenchmark.mockResolvedValueOnce({
+        fastest: 'Alternative_1', // Use sanitized key
+        results: [
+          { name: 'Original', ops: 1000000, margin: 0.01 },
+          { name: 'Alternative_1', ops: 2000000, margin: 0.01 } 
+          // Alternative_2 is excluded as if it failed correctness check
+        ]
+      });
 
       // Create mock context
       const mockContext = {};
@@ -207,16 +237,21 @@ describe('PerfCopilotParticipant', () => {
       // Verify services were called in the correct order
       expect(mockBenchmarkService.runBenchmark).toHaveBeenCalled();
       
-      // Verify the response was sent
+      // Verify the response was sent - Check for key stages
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Function `findDuplicates` identified. Analyzing...'));
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Generated 2 alternative implementations.')); 
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ 2 alternatives passed correctness check.'));
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ AI generated benchmark code.')); 
+      // Alternatives generation count might vary slightly based on parsing, let's check for progress instead
+      expect(mockResponse.progress).toHaveBeenCalledWith('Generating alternative implementations...'); 
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Generated 2 alternative implementations.')); // Assuming both parsed ok initially
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ AI identified entry point and generated test data.'));
+      // Correctness check messages depend on the actual run now, check progress
+      expect(mockResponse.progress).toHaveBeenCalledWith('Verifying functional correctness...');
+      // We expect 1 alternative to pass based on the benchmark mock setup
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ 1 alternatives passed correctness check.')); 
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('✅ Benchmarks completed.')); 
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Performance Analysis')); 
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Performance Analysis')); // Final explanation
       
-      // Clean up
-      parseAlternativesSpy.mockRestore();
+      // Clean up - parseAlternativesSpy was removed
+      // parseAlternativesSpy.mockRestore(); 
     });
     
     it('should handle no valid function found in request', async () => {
@@ -238,7 +273,7 @@ describe('PerfCopilotParticipant', () => {
     
     it('should handle invalid JavaScript function', async () => {
       const invalidCode = 'function invalidFunc(x, y) { return x + y;'; // Missing closing brace
-      const mockRequest = { prompt: `@perfcopilot \`\`\`javascript\n${invalidCode}\n\`\`\`` };
+      const mockRequest = { prompt: `@perfcopilot ` + '```javascript\\n' + invalidCode + '\\n```' };
       const mockContext = {};
 
       // Mock extractFunctionCodeFromPrompt to return the invalid code
