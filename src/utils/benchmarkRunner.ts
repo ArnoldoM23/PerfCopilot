@@ -11,47 +11,55 @@ const vm = require('vm');
 const functionsFilePath = process.argv[2];
 
 if (!functionsFilePath) {
-  console.error('BENCHMARK_ERROR: No functions file path provided.');
+  console.error('BENCHMARK_ERROR: No functions file path provided. Exiting...');
   process.exit(1);
 }
 
-if (!fs.existsSync(functionsFilePath)) {
-  console.error(`BENCHMARK_ERROR: Functions file not found: ${functionsFilePath}`);
+const absolutePath = path.resolve(functionsFilePath);
+console.log(`DEBUG: Resolved path: ${absolutePath}`);
+
+if (!fs.existsSync(absolutePath)) {
+  console.error(`BENCHMARK_ERROR: Functions file not found: ${absolutePath}. Exiting...`);
   process.exit(1);
 }
 
 let loadedModule: Record<string, any>;
 try {
-  // Require the dynamically generated file
-  const requiredModule = require(path.resolve(functionsFilePath));
+  console.log(`DEBUG: Attempting to require: ${absolutePath}`);
+  const requiredModule = require(absolutePath);
+  console.log('DEBUG: Require successful.');
   // Basic type check after require
   if (typeof requiredModule !== 'object' || requiredModule === null) {
       throw new Error('Module did not export an object.');
   }
   loadedModule = requiredModule as Record<string, any>;
 } catch (error) {
-  console.error(`BENCHMARK_ERROR: Failed to load functions from ${functionsFilePath}: ${error}`);
+  console.error(`BENCHMARK_ERROR: Failed to load functions from ${absolutePath}: ${error}. Exiting...`);
   process.exit(1);
 }
 
 // Validate required exports from the loaded module
 // Ensure implementations is an object (testData can be optional)
+console.log('DEBUG: Checking for implementations export...');
 if (!loadedModule.implementations || typeof loadedModule.implementations !== 'object') {
-    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing required implementations export.`); 
+    console.error(`BENCHMARK_ERROR: Loaded module from ${absolutePath} is missing required implementations export. Exiting...`);
     process.exit(1);
 }
+console.log('DEBUG: implementations export found.');
 
 // Use testData if available, otherwise default to an empty array
 const testData = loadedModule.testData !== undefined ? loadedModule.testData : [];
 const implementations = loadedModule.implementations as Record<string, string>; // Keep type assertion for TS
 
 // Find all implementation keys (e.g., 'Original', 'Alternative_1')
+console.log('DEBUG: Checking implementation keys...');
 const implementationKeys = Object.keys(implementations);
 
 if (implementationKeys.length === 0) {
-  console.error(`BENCHMARK_ERROR: No valid benchmark functions (originalFn or alternative*Fn) found in ${functionsFilePath}`);
+  console.error(`BENCHMARK_ERROR: No valid benchmark functions (keys) found in implementations object in ${absolutePath}. Exiting...`);
   process.exit(1);
 }
+console.log(`DEBUG: Found keys: ${implementationKeys.join(', ')}`);
 
 // Dynamically build the Benny suite
 try {
@@ -62,13 +70,13 @@ try {
             benny.add(implKey, () => {
                 // For each benchmark case, create a *new* isolated context
                 const context = {
-                    __testData: testData,
+                    testData: testData,
                     // __entryPointName: entryPointName, // Removed from context
                     // Add necessary globals (e.g., console, Math)
                     console: {
                         log: () => {}, warn: () => {}, error: () => {}
                     },
-                    Math: Math
+                    math: Math
                     // DO NOT pass the implementation code string here
                 };
                 vm.createContext(context);
@@ -77,7 +85,8 @@ try {
                     // Run the full code for THIS implementation inside the context
                     vm.runInContext(implementations[implKey], context, { timeout: 1000 });
 
-                    // Get the benchmark function by evaluating its name within the context
+                    // Get the benchmark function by evaluating its key name within the context
+                    // Assumes the processed code assigns the function to a variable named after the sanitized key
                     const entryFn = vm.runInContext(implKey, context);
                     if (typeof entryFn !== 'function') {
                         // Throw error specific to this case if function not found *after* running code
@@ -117,5 +126,9 @@ try {
     suite.run(); // Explicitly run the benny suite
 } catch (error) {
     console.error(`BENCHMARK_ERROR: Error setting up or running Benny suite: ${error}`);
+    // Log the stack trace for better debugging
+    if (error instanceof Error) {
+        console.error(`Stack Trace: ${error.stack}`);
+    }
     process.exit(1);
 } 
