@@ -13,6 +13,7 @@ import { FunctionImplementation } from '../models/types';
  * @param createInputGenerationPrompt - Function to generate the LLM prompt for inputs.
  * @param outputChannel - The output channel for logging.
  * @param token - Cancellation token.
+ * @param originalFunctionName - The name of the original function.
  * @returns A promise that resolves to an array of functionally equivalent alternatives.
  * @throws If verification cannot be completed due to errors.
  */
@@ -22,7 +23,8 @@ export async function verifyFunctionalEquivalence(
     languageModel: vscode.LanguageModelChat,
     createInputGenerationPrompt: (code: string) => string,
     outputChannel: vscode.OutputChannel,
-    token: vscode.CancellationToken
+    token: vscode.CancellationToken,
+    originalFunctionName: string
 ): Promise<FunctionImplementation[]> {
 
     outputChannel.appendLine('[CorrectnessVerifier] Starting functional equivalence check...');
@@ -92,16 +94,16 @@ export async function verifyFunctionalEquivalence(
     const expectedOutputs: { input: any; output?: any; error?: string }[] = [];
     outputChannel.appendLine('[CorrectnessVerifier] Executing original function...');
     for (const input of testInputs) {
+        if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         const args = Array.isArray(input) ? input : [input]; // Ensure args are always in an array
         try {
-            const output = await executeFunctionSafely(originalFunction.code, args);
+            const output = await executeFunctionSafely(originalFunction.code, originalFunctionName, args);
             expectedOutputs.push({ input, output });
         } catch (error: any) {
-            outputChannel.appendLine(`[CorrectnessVerifier] Original function failed for input ${JSON.stringify(input)}: ${error.message}`);
+            outputChannel.appendLine(`[CorrectnessVerifier] Original function ('${originalFunctionName}') failed for input ${JSON.stringify(input)}: ${error.message}`);
             expectedOutputs.push({ input, error: error.message });
             // If the original fails, we can't verify alternatives against it for this input
         }
-        if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
     }
 
     // 3. Execute Alternatives and Compare Outputs
@@ -109,23 +111,36 @@ export async function verifyFunctionalEquivalence(
     outputChannel.appendLine('[CorrectnessVerifier] Verifying alternatives...');
 
     for (const alt of alternatives) {
+        if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         let isEquivalent = true;
+        let comparisonPerformed = false; // --- ADDED: Track if any valid comparison happened ---
         outputChannel.appendLine(`--- Verifying ${alt.name} ---`);
         for (let i = 0; i < testInputs.length; i++) {
+            if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
             const input = testInputs[i];
             const expected = expectedOutputs[i];
             const args = Array.isArray(input) ? input : [input];
 
             if (expected.error) {
-                outputChannel.appendLine(` - Skipping input ${i + 1} (original failed)`);
+                outputChannel.appendLine(` - Input ${i + 1}: SKIPPED (original function failed)`);
                 continue; // Cannot compare if original failed
             }
 
+            // --- If we reach here, a comparison is possible ---
+            comparisonPerformed = true; 
+
             try {
-                const altOutput = await executeFunctionSafely(alt.code, args);
-                // Use util.isDeepStrictEqual which returns a boolean
-                if (!util.isDeepStrictEqual(altOutput, expected.output)) {
-                    outputChannel.appendLine(` - Input ${i + 1}: FAILED. Expected: ${JSON.stringify(expected.output)}, Got: ${JSON.stringify(altOutput)}`);
+                const altOutput = await executeFunctionSafely(alt.code, originalFunctionName, args);
+                
+                // Compare using JSON stringification for robustness
+                const expectedJson = JSON.stringify(expected.output);
+                const altJson = JSON.stringify(altOutput);
+
+                if (altJson !== expectedJson) {
+                    outputChannel.appendLine(` - Input ${i + 1}: FAILED. Expected JSON: ${expectedJson}, Got JSON: ${altJson}`);
+                    // Optional: Log full objects if helpful for debugging complex cases
+                    // outputChannel.appendLine(`   Expected Object: ${util.inspect(expected.output, { depth: null })}`);
+                    // outputChannel.appendLine(`   Got Object: ${util.inspect(altOutput, { depth: null })}`);
                     isEquivalent = false;
                     break; // No need to check further inputs for this alternative
                 } else {
@@ -136,12 +151,15 @@ export async function verifyFunctionalEquivalence(
                 isEquivalent = false;
                 break; // Alternative threw an error, not equivalent
             }
-            if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         }
 
-        if (isEquivalent) {
+        // --- MODIFIED Condition ---
+        if (isEquivalent && comparisonPerformed) { 
             outputChannel.appendLine(` => ${alt.name}: VERIFIED`);
             verifiedAlternatives.push(alt);
+        // --- ADDED Condition ---
+        } else if (!comparisonPerformed) {
+             outputChannel.appendLine(` => ${alt.name}: INDETERMINATE (Original function failed on all inputs)`);
         } else {
             outputChannel.appendLine(` => ${alt.name}: REJECTED (Not equivalent)`);
         }
@@ -155,16 +173,16 @@ export async function verifyFunctionalEquivalence(
  * Safely executes function code with given arguments in an isolated context.
  * 
  * @param functionCode - The string representation of the function.
+ * @param functionName - The name of the function.
  * @param args - An array of arguments to pass to the function.
  * @returns The result of the function execution.
  * @throws If the code cannot be compiled or execution fails.
  */
-export async function executeFunctionSafely(functionCode: string, args: any[]): Promise<any> {
+export async function executeFunctionSafely(functionCode: string, functionName: string, args: any[]): Promise<any> {
     // Create a context for the VM script, passing arguments
     const context = {
         // eslint-disable-next-line @typescript-eslint/naming-convention
         __args: args,
-        // Add any other globals needed, carefully (e.g., Math)
         console: {
             log: () => {}, // Suppress console.log within the function
             warn: () => {},
@@ -174,75 +192,42 @@ export async function executeFunctionSafely(functionCode: string, args: any[]): 
         Math: Math,
         // eslint-disable-next-line @typescript-eslint/naming-convention
         __result: undefined, // Variable to store the result
-        // Pass vm module itself ONLY if absolutely necessary for advanced sandboxing cases,
-        // but generally avoid it. Avoid other Node.js globals like 'process', 'require'.
     };
     vm.createContext(context); // Contextify the object
 
-    let targetFunctionName: string | undefined;
     let isAsync = false;
+    let functionRef: any; // Variable to hold the actual function reference
 
     try {
+        // Simple check for 'async function functionName' or 'async (...) =>' assigned to functionName
+        const asyncFuncRegex = new RegExp(`(?:async\s+function\s+${functionName}\b|\b${functionName}\s*=\s*async\b)`);
+        isAsync = asyncFuncRegex.test(functionCode);
+
         // Step 1: Run the entire user code in the context to define functions
         // Use a timeout to prevent infinite loops in the user code itself during definition.
-        vm.runInContext(functionCode, context, { timeout: 1000 });
+        vm.runInContext(functionCode, context, { timeout: 1000 }); 
 
-        // Step 2: Identify the primary function to execute
-        // Attempt to find the *first* declared function or assigned arrow function
-        // This is a limitation: assumes the first function is the entry point.
-        const functionNameMatch = functionCode.match(/(?:async\s+)?(?:function|const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)/);
-        const arrowFunctionNameMatch = functionCode.match(/^(?:const|let|var)\s+([a-zA-Z_$][0-9a-zA-Z_$]*)\s*=\s*(?:async\s*)?\(/);
+        // Step 2: Get the function reference by evaluating its name in the context
+        functionRef = vm.runInContext(functionName, context); 
 
-        if (functionNameMatch && functionNameMatch[1]) {
-            targetFunctionName = functionNameMatch[1];
-             isAsync = /async\s+function/.test(functionCode.substring(0, functionNameMatch[0].length + functionNameMatch[1].length + 10)); // Check if async keyword precedes function
-        } else if (arrowFunctionNameMatch && arrowFunctionNameMatch[1]) {
-             targetFunctionName = arrowFunctionNameMatch[1];
-             isAsync = /=\s*async\s*\(/.test(functionCode.substring(0, arrowFunctionNameMatch[0].length + arrowFunctionNameMatch[1].length + 15)); // Check if async keyword precedes arrow func
-        } else {
-             // Fallback: Maybe it's an immediately exported anonymous function or similar?
-             // Try a broader regex, less reliable.
-             const broaderMatch = functionCode.match(/^(?:module\.exports\s*=\s*)?(?:async\s+)?function\s*\(/);
-             if (broaderMatch) {
-                 // Difficult to get a name here, execution needs different approach if truly anonymous.
-                 // For now, let's throw, as our primary mechanism needs a name.
-                  throw new Error('Could not reliably determine the target function name to execute.');
-             } else {
-                  throw new Error('Could not find a function declaration or assignment to execute.');
-             }
-        }
-        
-        // Ensure targetFunctionName is defined before using it as index
-        if (!targetFunctionName) {
-            throw new Error('Failed to identify target function name.');
-        }
-        if (typeof (context as any)[targetFunctionName] !== 'function') {
-            throw new Error(`Target function '${targetFunctionName}' was not defined or is not a function after evaluating the code.`);
+        // Check if we got a function
+        if (typeof functionRef !== 'function') {
+            throw new Error(`Target function '${functionName}' was not defined or is not a function after evaluating the code.`);
         }
 
         // Step 3: Construct and run a script to CALL the target function
-        // Use an async IIFE if the target function is async
-        const callScriptContent = `
-            (async () => {
-                // Double check function exists in context just before calling
-                if (typeof ${(context as any)[targetFunctionName!] ? targetFunctionName : 'undefined'} !== 'function') {
-                     throw new Error('Target function ${targetFunctionName} disappeared from context');
-                 }
-                __result = ${isAsync ? 'await ' : ''}${targetFunctionName}(...__args);
-            })();
-        `;
-
-        const callScript = new vm.Script(callScriptContent, { filename: 'executionScript.js' });
-        // Use a separate timeout for the actual execution.
-        // Needs to be awaited because the script runs an async IIFE.
-        // Removed microtaskMode as it caused linting error
-        await callScript.runInContext(context, { timeout: 2000 }); 
+        // We call the reference directly now, no need for IIFE or checking context again
+        if (isAsync) {
+             context.__result = await functionRef(...context.__args);
+        } else {
+             context.__result = functionRef(...context.__args);
+        }
 
         return context.__result; // Return the stored result
 
     } catch (error: any) {
         // Improve error reporting
-        const errorMessage = `Execution failed: ${error.message}${targetFunctionName ? ` (targeting function: ${targetFunctionName})` : ''}`;
+        const errorMessage = `Execution failed: ${error.message} (targeting function: ${functionName})`;
         console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack); // Log stack trace too
         // Re-throw a new error with combined info, preserving original stack if possible
         const executionError = new Error(errorMessage);

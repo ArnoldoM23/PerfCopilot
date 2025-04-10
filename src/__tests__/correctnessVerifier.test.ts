@@ -121,7 +121,7 @@ ${JSON.stringify(testInputs)}
       // No need for mockImplementationOnce here anymore for standard cases.
 
       // Act - Call REAL verifyFunctionalEquivalence
-      const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+      const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
       // Assert...
       expect(verified).toHaveLength(1);
@@ -144,7 +144,7 @@ ${JSON.stringify(testInputs)}
      // No need for mockImplementationOnce here anymore for standard cases.
 
      // Act
-     const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+     const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
      // Assert...
      expect(verified).toHaveLength(1); // Should only contain the equivalent one
@@ -191,7 +191,7 @@ ${JSON.stringify(testInputs)}
        });
 
        // Act
-       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
        // Assert...
        expect(verified).toHaveLength(0); // Should be empty as the alternative failed
@@ -243,7 +243,7 @@ ${JSON.stringify(testInputs)}
         console.log('[TEST LOG][Cancel Test] Calling verifyFunctionalEquivalence...');
         // Act & Assert for rejection
         await expect(
-            CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken)
+            CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName")
         ).rejects.toThrow('Operation cancelled'); // Expect rejection
 
         // Assert state after rejection
@@ -264,7 +264,7 @@ ${JSON.stringify(testInputs)}
         mockLanguageModel.sendRequest.mockResolvedValue({ text: createMockLLMStream(invalidJsonResponse) } as any);
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert
         expect(verified).toEqual([]); // Should be empty if inputs failed to parse
@@ -282,7 +282,7 @@ ${JSON.stringify(testInputs)}
         mockLanguageModel.sendRequest.mockResolvedValue({ text: createMockLLMStream(emptyInputsJson) } as any);
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert
         expect(verified).toEqual([]); // Should be empty as no inputs means no execution
@@ -298,7 +298,7 @@ ${JSON.stringify(testInputs)}
         mockCancellationToken.isCancellationRequested = true; // Set cancellation before calling
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert
         expect(verified).toEqual([]); // Should be empty if cancelled before start
@@ -328,7 +328,7 @@ ${JSON.stringify(testInputs)}
         //     .mockImplementationOnce((context) => { ... }); // REMOVED
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(objFunc, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(objFunc, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert
         expect(verified).toHaveLength(1); // Only the equivalent object func should pass
@@ -381,7 +381,7 @@ ${JSON.stringify(testInputs)}
         });
 
        // Act
-       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
        // Assert
        expect(verified).toHaveLength(0); // Should be empty as the alternative failed
@@ -401,7 +401,7 @@ ${JSON.stringify(testInputs)}
         mockLanguageModel.sendRequest.mockResolvedValue({ text: createMockLLMStream(llmResponseRawJson) } as any);
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert - Should fail to extract JSON and skip verification
         expect(verified).toEqual([]);
@@ -422,7 +422,7 @@ ${JSON.stringify(testInputs)}
             .mockReturnValueOnce(20); // Alt(5, 15) -> 20
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert - Should extract and parse the JSON correctly
         expect(verified).toHaveLength(1);
@@ -450,7 +450,7 @@ ${JSON.stringify(testInputs)}
             .mockReturnValueOnce(-20); // simpleAlt(-10) -> -20
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(simpleFunc, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken);
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(simpleFunc, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken, "mockFunctionName");
 
         // Assert
         expect(verified).toHaveLength(1);

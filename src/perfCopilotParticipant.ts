@@ -190,41 +190,16 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 }
                  response.markdown(`✅ Generated ${alternatives.length} alternative implementations.`);
 
-                 // --- Add Correctness Check --- 
-                 response.progress('Verifying functional correctness...');
-                 let verifiedAlternatives: FunctionImplementation[] = [];
-                 try {
-                     verifiedAlternatives = await verifyFunctionalEquivalence(
-                         originalFunction, 
-                         alternatives, 
-                         languageModel, 
-                         this.createInputGenerationPrompt.bind(this), // Pass the prompt generator function
-                         this.outputChannel,
-                         token
-                     );
+                 // Initialize verifiedAlternatives with all alternatives as a fallback
+                 let verifiedAlternatives: FunctionImplementation[] = alternatives;
 
-                     if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
-
-                     if (verifiedAlternatives.length < alternatives.length) {
-                         response.markdown(`ℹ️ Rejected ${alternatives.length - verifiedAlternatives.length} alternatives due to incorrect results.`);
-                     }
-                     if (verifiedAlternatives.length === 0) {
-                         response.markdown('🔴 **Error:** No alternative implementations passed the functional correctness check. Cannot proceed with benchmarking.');
-                         return { metadata: { error: 'All alternatives failed correctness check.' } };
-                     }
-                     response.markdown(`✅ ${verifiedAlternatives.length} alternatives passed correctness check.`);
-
-                 } catch (error: any) {
-                     if (token.isCancellationRequested) { 
-                         response.markdown("Operation cancelled by user.");
-                         return {}; 
-                     }
-                     this.outputChannel.appendLine(`Error during functional verification: ${error.message}`);
-                     response.markdown(`⚠️ **Warning:** Could not verify functional correctness due to an error: ${error.message}. Proceeding with all generated alternatives.`);
-                     // Fallback: Use original alternatives if verification fails unexpectedly
-                     verifiedAlternatives = alternatives; 
-                 }
-                 // --- End Correctness Check ---
+                 // --- MOVED: Correctness Check (Moved after benchmark config generation) ---
+                 // response.progress('Verifying functional correctness...');
+                 // let verifiedAlternatives: FunctionImplementation[] = [];
+                 // try {
+                 //     verifiedAlternatives = await verifyFunctionalEquivalence(...)
+                 // } ...
+                 // --- End Moved Block ---
 
                  if (token.isCancellationRequested) {
                     response.markdown("Operation cancelled by user.");
@@ -235,7 +210,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 let benchmarkCode: string | undefined;
                 try {
                     // Use only verified alternatives for benchmarking
-                    const benchmarkPrompt = this.createBenchmarkPrompt(originalFunction, verifiedAlternatives);
+                    const benchmarkPrompt = this.createBenchmarkPrompt(originalFunction, alternatives);
                     const benchmarkMessages = [vscode.LanguageModelChatMessage.User(benchmarkPrompt)];
                     let benchmarkResponseText = '';
                     const benchmarkRequest = await languageModel.sendRequest(benchmarkMessages, {}, token);
@@ -274,18 +249,91 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                         throw new Error('Failed to extract benchmark configuration JSON from AI response.');
                     }
 
+                    // --- NEW: Correctness Check (Run AFTER getting entryPointName) ---
+                    response.progress('Verifying functional correctness...');
+                    try {
+                        // Use the entryPointName identified by the LLM for verification
+                        const checkResults = await verifyFunctionalEquivalence(
+                            originalFunction, 
+                            alternatives, 
+                            languageModel, 
+                            this.createInputGenerationPrompt.bind(this), 
+                            this.outputChannel,
+                            token,
+                            benchmarkConfig.entryPointName // Use LLM-identified entry point
+                        );
+
+                        // If successful, update verifiedAlternatives
+                        verifiedAlternatives = checkResults;
+
+                        if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
+
+                        if (verifiedAlternatives.length < alternatives.length) {
+                            response.markdown(`ℹ️ Rejected ${alternatives.length - verifiedAlternatives.length} alternatives due to incorrect results.`);
+                        }
+                        if (verifiedAlternatives.length === 0) {
+                            response.markdown('🔴 **Error:** No alternative implementations passed the functional correctness check. Cannot proceed with benchmarking.');
+                            return { metadata: { error: 'All alternatives failed correctness check.' } };
+                        }
+                        response.markdown(`✅ ${verifiedAlternatives.length} alternatives passed correctness check.`);
+
+                    } catch (error: any) {
+                        if (token.isCancellationRequested) { 
+                            response.markdown("Operation cancelled by user.");
+                            return {}; 
+                        }
+                        this.outputChannel.appendLine(`Error during functional verification: ${error.message}`);
+                        response.markdown(`⚠️ **Warning:** Could not verify functional correctness due to an error: ${error.message}. Proceeding with all generated alternatives.`);
+                        // Fallback: verifiedAlternatives already contains the original 'alternatives' 
+                    }
+                    // --- End Correctness Check ---
+
+                    if (token.isCancellationRequested) {
+                        response.markdown("Operation cancelled by user.");
+                        return {};
+                    }
+
+                    // --- Process Implementations for Runner ---
+                    this.outputChannel.appendLine('Processing implementations for benchmark runner...');
+                    const processedImplementations: Record<string, string> = {};
+                    const originalEntryPoint = benchmarkConfig.entryPointName;
+                    
+                    // Use ONLY verified alternatives from now on
+                    const implementationsToProcess = {
+                        [originalFunction.name]: originalFunction.code,
+                        ...Object.fromEntries(verifiedAlternatives.map(alt => [alt.name, alt.code]))
+                    };
+
+                    for (const [rawKey, code] of Object.entries(implementationsToProcess)) {
+                        // Sanitize the key to be a valid JS identifier (e.g., "Alternative 1" -> "Alternative_1")
+                        const sanitizedKey = rawKey.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+                        this.outputChannel.appendLine(`Processing implementation: ${rawKey} -> ${sanitizedKey}`);
+                        
+                        // Replace original function name and recursive calls with the sanitized key
+                        const processedCode = this.benchmarkService.replaceRecursiveCalls(
+                            code,
+                            originalEntryPoint,
+                            sanitizedKey
+                        );
+                        processedImplementations[sanitizedKey] = processedCode;
+                        this.outputChannel.appendLine(` -> Code processed for ${sanitizedKey}. Length: ${processedCode.length}`);
+                    }
+                    // --- End Processing ---
+
+
                     // Construct the actual code module to be run by benchmarkRunner.js
                     benchmarkCode = `
 // Benchmark configuration generated by PerfCopilot
-const entryPointName = ${JSON.stringify(benchmarkConfig.entryPointName)};
+// Entry Point Name was: ${JSON.stringify(benchmarkConfig.entryPointName)} (used internally)
 const testData = ${JSON.stringify(benchmarkConfig.testData, null, 2)}; // Pretty-print testData
 const implementations = {
-${Object.entries(benchmarkConfig.implementations).map(([key, code]) => 
+${Object.entries(processedImplementations).map(([key, code]) => 
+    // Key is already sanitized, code is processed
     `  ${JSON.stringify(key)}: ${JSON.stringify(code)}`).join(',\n')}
 };
 
 module.exports = {
-    entryPointName,
+    // entryPointName, // Removed - runner uses keys from implementations
     testData,
     implementations
 };

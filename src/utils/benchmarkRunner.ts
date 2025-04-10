@@ -35,18 +35,18 @@ try {
 }
 
 // Validate required exports from the loaded module
-if (!loadedModule.entryPointName || typeof loadedModule.entryPointName !== 'string' ||
-    loadedModule.testData === undefined || // Allow null/undefined for testData
+// Ensure testData is present (can be null/undefined) and implementations is an object.
+if (loadedModule.testData === undefined || 
     !loadedModule.implementations || typeof loadedModule.implementations !== 'object') {
-    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing required exports (entryPointName, testData, implementations).`);
+    // Corrected Error Message: Only mention missing testData or implementations
+    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing required exports (testData, implementations).`); 
     process.exit(1);
 }
 
-const entryPointName = loadedModule.entryPointName;
 const testData = loadedModule.testData;
-const implementations = loadedModule.implementations as Record<string, string>; // Object with { 'Original': 'code...', 'Alternative 1': 'code...' }
+const implementations = loadedModule.implementations as Record<string, string>; // Keep type assertion for TS
 
-// Find all implementation keys (e.g., 'Original', 'Alternative 1')
+// Find all implementation keys (e.g., 'Original', 'Alternative_1')
 const implementationKeys = Object.keys(implementations);
 
 if (implementationKeys.length === 0) {
@@ -64,7 +64,7 @@ try {
                 // For each benchmark case, create a *new* isolated context
                 const context = {
                     __testData: testData,
-                    __entryPointName: entryPointName,
+                    // __entryPointName: entryPointName, // Removed from context
                     // Add necessary globals (e.g., console, Math)
                     console: {
                         log: () => {}, warn: () => {}, error: () => {}
@@ -78,14 +78,14 @@ try {
                     // Run the full code for THIS implementation inside the context
                     vm.runInContext(implementations[implKey], context, { timeout: 1000 });
 
-                    // Get the entry point function *from the context*
-                    const entryFn = (context as any)[entryPointName];
+                    // Get the benchmark function by evaluating its name within the context
+                    const entryFn = vm.runInContext(implKey, context);
                     if (typeof entryFn !== 'function') {
                         // Throw error specific to this case if function not found *after* running code
-                        throw new Error(`Entry point function '${entryPointName}' not found in context for implementation '${implKey}'.`);
+                        throw new Error(`Benchmark function '${implKey}' not found in context after running code.`); // Updated error message
                     }
 
-                    // Execute the entry point function with the test data
+                    // Execute the benchmark function with the test data
                     entryFn(testData);
                 } catch (execError) {
                      // Catch errors during runInContext or function execution within the benchmark case
