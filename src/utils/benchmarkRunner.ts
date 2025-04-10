@@ -35,22 +35,21 @@ try {
 }
 
 // Validate required exports from the loaded module
-// Ensure testData is present (can be null/undefined) and implementations is an object.
-if (loadedModule.testData === undefined || 
-    !loadedModule.implementations || typeof loadedModule.implementations !== 'object') {
-    // Corrected Error Message: Only mention missing testData or implementations
-    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing required exports (testData, implementations).`); 
+// Ensure implementations is an object (testData can be optional)
+if (!loadedModule.implementations || typeof loadedModule.implementations !== 'object') {
+    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing required implementations export.`); 
     process.exit(1);
 }
 
-const testData = loadedModule.testData;
+// Use testData if available, otherwise default to an empty array
+const testData = loadedModule.testData !== undefined ? loadedModule.testData : [];
 const implementations = loadedModule.implementations as Record<string, string>; // Keep type assertion for TS
 
 // Find all implementation keys (e.g., 'Original', 'Alternative_1')
 const implementationKeys = Object.keys(implementations);
 
 if (implementationKeys.length === 0) {
-  console.error(`BENCHMARK_ERROR: No implementations found in the loaded module from ${functionsFilePath}`);
+  console.error(`BENCHMARK_ERROR: No valid benchmark functions (originalFn or alternative*Fn) found in ${functionsFilePath}`);
   process.exit(1);
 }
 
@@ -115,7 +114,7 @@ try {
             console.log('RESULTS_JSON: ' + JSON.stringify({ results: formattedResults, fastest: fastestSuiteName }));
         })
     );
-    // suite.run(); // Benny runs automatically when the script finishes if not explicitly run?
+    suite.run(); // Explicitly run the benny suite
 } catch (error) {
     console.error(`BENCHMARK_ERROR: Error setting up or running Benny suite: ${error}`);
     process.exit(1);
