@@ -97,10 +97,10 @@ export async function verifyFunctionalEquivalence(
         if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         const args = Array.isArray(input) ? input : [input]; // Ensure args are always in an array
         try {
-            const output = await executeFunctionSafely(originalFunction.code, originalFunction.name, args);
+            const output = await executeFunctionSafely(originalFunction.code, originalFunctionName, args);
             expectedOutputs.push({ input, output });
         } catch (error: any) {
-            outputChannel.appendLine(`[CorrectnessVerifier] Original function ('${originalFunction.name}') failed for input ${JSON.stringify(input)}: ${error.message}`);
+            outputChannel.appendLine(`[CorrectnessVerifier] Original function ('${originalFunctionName}') failed for input ${JSON.stringify(input)}: ${error.message}`);
             expectedOutputs.push({ input, error: error.message });
             // If the original fails, we can't verify alternatives against it for this input
         }
@@ -130,7 +130,7 @@ export async function verifyFunctionalEquivalence(
             comparisonPerformed = true; 
 
             try {
-                const altOutput = await executeFunctionSafely(alt.code, alt.name, args);
+                const altOutput = await executeFunctionSafely(alt.code, originalFunctionName, args);
                 
                 // Compare using JSON stringification for robustness
                 const expectedJson = JSON.stringify(expected.output);
@@ -179,96 +179,50 @@ export async function verifyFunctionalEquivalence(
  * @throws If the code cannot be compiled or execution fails.
  */
 export async function executeFunctionSafely(functionCode: string, functionName: string, args: any[]): Promise<any> {
+    // Revert to context that includes __result
     const context = {
         // eslint-disable-next-line @typescript-eslint/naming-convention
         __args: args,
-        console: {
-            log: () => {}, 
-            warn: () => {},
-            error: () => {}
-        },
-        // Pass common globals explicitly
+        console: { log: () => {}, warn: () => {}, error: () => {} },
         // eslint-disable-next-line @typescript-eslint/naming-convention
         Math: Math,
         // eslint-disable-next-line @typescript-eslint/naming-convention
-        JSON: JSON, 
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        Date: Date,
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        __theFunction: undefined, // To store the function reference
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        __result: undefined, // To store the result
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        __error: undefined   // To store potential async errors
+        __result: undefined as any
     };
-    vm.createContext(context); 
+    vm.createContext(context);
+
+    let isAsync = false;
+    let functionRef: any; // Revert to less specific type
 
     try {
-        // Step 1: Define the function within the context
-        // Assign the evaluated function expression directly to context.__theFunction
-        const defineScript = `__theFunction = (${functionCode});`;
-        
-        // Use a timeout during definition to catch potential infinite loops in the function code itself
-        vm.runInContext(defineScript, context, { timeout: 1000 }); 
+        // Revert async check if needed, or keep simple one
+        isAsync = functionCode.includes('async'); // Simple check
 
-        // Step 2: Check if the function reference was successfully captured
-        // (The name check inside defineScript is removed as we assign directly)
-        if (typeof context.__theFunction !== 'function') {
-            // This might happen if the provided code string doesn't evaluate to a function
-            throw new Error(`Provided code does not evaluate to a function (targeting function: ${functionName}). Code: ${functionCode}`);
-        }
+        // Step 1: Run the entire user code in the context to define functions (timeout 1000)
+        vm.runInContext(functionCode, context, { timeout: 1000 });
 
-        // Step 3: Call the captured function reference
-        const functionRef: any = context.__theFunction; // Cast to any after capture
-        
-        // Add a type guard before accessing properties
+        // Step 2: Get the function reference by evaluating its name in the context (timeout 50)
+        functionRef = vm.runInContext(functionName, context, { timeout: 50 });
+
+        // Step 3: Check if we got a function
         if (typeof functionRef !== 'function') {
-            // This should technically be caught earlier, but provides robustness
-            throw new Error(`Internal error: Captured function reference is not a function.`); 
+            throw new Error(`Target function '${functionName}' was not defined or is not a function after evaluating the code.`);
         }
-        const isAsync = functionRef.toString().startsWith('async'); // Safer check for async
 
-        // Use a longer timeout for the actual execution
-        const executionTimeout = 5000; 
-
+        // Step 4: Call the function reference
         if (isAsync) {
-             // Execute async function and capture result/error in context
-            const callScript = `
-                (async () => {
-                    try {
-                        __result = await __theFunction(...__args);
-                    } catch (e) {
-                        __error = e;
-                    }
-                })();
-            `;
-            await vm.runInContext(callScript, context, { timeout: executionTimeout });
-             if (context.__error) {
-                 throw context.__error; // Re-throw error caught inside async IIFE
-             }
+             context.__result = await functionRef(...context.__args);
         } else {
-            // Execute sync function directly
-             const callScript = `__result = __theFunction(...__args);`;
-             vm.runInContext(callScript, context, { timeout: executionTimeout });
+             context.__result = functionRef(...context.__args);
         }
 
         return context.__result; // Return the stored result
 
     } catch (error: any) {
-        // Improve error reporting
-        let errorMessage = `Execution failed: ${error.message} (targeting function: ${functionName})`;
-        if (error.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
-             errorMessage = `Execution timed out after ${error.timeout || 'N/A'}ms (targeting function: ${functionName})`;
-        } else if (error instanceof Error) {
-            // Use original error message if available
-            errorMessage = `Execution failed: ${error.message} (targeting function: ${functionName})`;
-        }
-
-        console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack); 
-        
-        // Re-throw a new error with combined info
+        const errorMessage = `Execution failed for ${functionName}: ${error.message}`;
+        console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack);
         const executionError = new Error(errorMessage);
-        executionError.stack = error.stack || executionError.stack; 
+        executionError.stack = error.stack || executionError.stack;
         throw executionError;
     }
 } 
