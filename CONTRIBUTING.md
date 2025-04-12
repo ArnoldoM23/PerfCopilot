@@ -50,4 +50,17 @@ For feature suggestions:
 5.  Link any relevant issues (e.g., "Closes #123").
 6.  Submit the pull request.
 
-Project maintainers will review your pull request and provide feedback. Thank you for your contribution! 
+Project maintainers will review your pull request and provide feedback. Thank you for your contribution!
+
+## Releasing (Automated)
+
+This extension uses an automated release process triggered by merging Pull Requests into the `main` branch:
+
+1.  The `.github/workflows/auto-tag.yml` workflow runs on merge.
+2.  It checks the current version in `package.json`.
+3.  If a Git tag `vX.Y.Z` for the current version already exists, it increments the minor version (e.g., 1.2.3 -> 1.3.0). Otherwise, it uses the current version.
+4.  It updates `package.json` and `package-lock.json` with the determined version and commits the change back to `main`.
+5.  It creates and pushes a Git tag (e.g., `v1.3.0`).
+6.  It automatically publishes the new version to the Visual Studio Code Marketplace using `vsce`.
+
+**Important for Contributors:** Please do **not** manually bump the version number in `package.json` or create release tags in your Pull Requests. The automated workflow handles this process upon merge to `main`. 
