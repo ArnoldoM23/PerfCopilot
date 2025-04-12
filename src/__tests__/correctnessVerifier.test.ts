@@ -368,9 +368,8 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
         // Assert
         expect(verified).toHaveLength(1);
         expect(verified[0]).toBe(simpleAlt);
-        // FIX: Updated call count expectation
-        // Orig(exec*3)=3, AltS(exec*3)=3 
-        expect(mockBehavior.callCount).toBe(4 + 4);
+        // FIX: Correct call count expectation for 2-step execution
+        // Orig(exec*3*2_calls)=6, AltS(exec*3*2_calls)=6 \n        expect(mockBehavior.callCount).toBe(6 + 6); // Should be 12
     });
 
     // --- REMOVED the tests that were specifically using mockExecuteFunctionSafely --- 
