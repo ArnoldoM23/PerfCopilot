@@ -30,6 +30,9 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Create Build
+        run: npm run build # Assumes 'build' script exists in package.json
+
       - name: Get current version from package.json
         id: package-version
         uses: martinbeentjes/npm-get-version-action@v1.3.1
