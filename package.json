@@ -2,7 +2,7 @@
   "name": "perfcopilot",
   "displayName": "PerfCopilot",
   "description": "Analyze JavaScript/TypeScript functions for performance improvements using GitHub Copilot",
-  "version": "0.4.0",
+  "version": "0.4.6",
   "publisher": "ArnoldoMunoz",
   "private": false,
   "license": "MIT",

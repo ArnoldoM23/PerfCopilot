@@ -1,4 +1,3 @@
-
 /**
  * PerfCopilot Chat Participant
  * 
@@ -422,7 +421,9 @@ Analyze the following JavaScript/TypeScript function for performance optimizatio
 ${functionCode}
 \`\`\`
 
-Generate exactly two distinct alternative implementations aiming for improved performance. Maintain the original function's signature and core functionality.
+Generate exactly two distinct alternative implementations aiming for improved performance.
+
+Maintain the original function's signature and core functionality.
 
 **Output Format:**
 Provide your response strictly as a JSON array containing two objects. Each object must have the following properties:
