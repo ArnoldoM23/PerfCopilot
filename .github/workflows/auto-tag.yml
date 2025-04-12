@@ -1,4 +1,4 @@
-name: Auto Tag and Publish on PR Merge
+name: Publish on PR Merge
 
 on:
   pull_request:
@@ -7,139 +7,72 @@ on:
       - main
 
 jobs:
-  create-tag-and-publish:
+  publish-extension:
     # Only run if the PR was merged (not just closed)
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Need write permissions to push commit and tag
+      contents: write # Still needed to push tag
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4 # Use v4
+        uses: actions/checkout@v4
         with:
-          # Fetch all history so we can check for existing tags accurately
+          # Fetch all history for tag checking later
           fetch-depth: 0
-          # Check out the main branch explicitly after merge
           ref: main
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x' # Use a consistent Node version
+          node-version: '20.x'
           cache: 'npm'
 
-      - name: Install dependencies # Added dependency install for npm version etc.
+      - name: Install dependencies
         run: npm install
 
       - name: Get current version from package.json
         id: package-version
         uses: martinbeentjes/npm-get-version-action@v1.3.1
 
-      - name: Determine Target Version # Renamed and updated logic
-        id: set-version
-        run: |
-          CURRENT_VERSION=${{ steps.package-version.outputs.current-version }}
-          TARGET_VERSION="" # Initialize target version
-
-          # Check if CURRENT tag exists
-          if git rev-parse "v${CURRENT_VERSION}" >/dev/null 2>&1; then
-            echo "Tag v${CURRENT_VERSION} already exists. Calculating next minor version."
-            # Calculate next minor version using bash
-            IFS='.' read -r -a version_parts <<< "$CURRENT_VERSION"
-            MAJOR=${version_parts[0]}
-            MINOR=$((version_parts[1] + 1))
-            PATCH=0 # Reset patch on minor increment
-            NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-            echo "Calculated next version: ${NEXT_VERSION}"
-
-            # Check if NEXT tag ALSO exists
-            if git rev-parse "v${NEXT_VERSION}" >/dev/null 2>&1; then
-              echo "::error::Calculated next tag v${NEXT_VERSION} also already exists. Cannot proceed."
-              exit 1 # Fail the workflow
-            else
-              echo "Next tag v${NEXT_VERSION} does not exist. Setting as target."
-              TARGET_VERSION=$NEXT_VERSION
-            fi
-          else
-            echo "Tag v${CURRENT_VERSION} does not exist. Using current version as target."
-            TARGET_VERSION=$CURRENT_VERSION
-          fi
-
-          if [[ -z "$TARGET_VERSION" ]]; then
-            echo "::error::Could not determine target version."
-            exit 1
-          fi
-
-          echo "Final Target Version: ${TARGET_VERSION}"
-          echo "TARGET_VERSION=${TARGET_VERSION}" >> $GITHUB_OUTPUT
-
-      - name: Update package.json, Commit, Tag, and Push
-        id: version-commit-tag-push
-        env:
-          TARGET_VERSION: ${{ steps.set-version.outputs.TARGET_VERSION }}
-          CURRENT_VERSION: ${{ steps.package-version.outputs.current-version }} # Pass current version too
-        run: |
-          echo "Target version for update and tag: ${TARGET_VERSION}"
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-
-          # Only update package.json if the target version is different from the current one
-          if [[ "${TARGET_VERSION}" != "${CURRENT_VERSION}" ]]; then
-            echo "Updating package.json from ${CURRENT_VERSION} to ${TARGET_VERSION}..."
-            npm version ${TARGET_VERSION} --no-git-tag-version --no-push --allow-same-version # Should not be same here, but safe
-            echo "package.json updated."
-            git add package.json package-lock.json || true
-            git commit -m "chore: bump version to ${TARGET_VERSION}"
-            COMMIT_PUSH_NEEDED=true
-          else
-             echo "Target version ${TARGET_VERSION} is same as current. Skipping package.json update and commit."
-             COMMIT_PUSH_NEEDED=false
-          fi
-
-          # Create the Git tag (previous step checked if it exists)
-          echo "Creating Git tag v${TARGET_VERSION}"
-          git tag -a "v${TARGET_VERSION}" -m "Release version ${TARGET_VERSION}"
-
-          # Push changes
-          if [[ "$COMMIT_PUSH_NEEDED" == "true" ]]; then
-            echo "Pushing commit and tag to origin main..."
-            git push origin main # Push commit first
-            git push origin "v${TARGET_VERSION}" # Then push tag
-          else
-            echo "Pushing only tag to origin main..."
-            git push origin "v${TARGET_VERSION}" # Only push tag if no commit needed
-          fi
-
-          # Set output for other steps
-          echo "VERSION=${TARGET_VERSION}" >> $GITHUB_ENV
-
       - name: Install vsce
         run: npm install -g @vscode/vsce
 
       - name: Publish to VS Code Marketplace
+        id: publish # Added ID to check outcome later if needed
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-          TARGET_VERSION: ${{ steps.set-version.outputs.TARGET_VERSION }}
         run: |
-          echo "Publishing version ${TARGET_VERSION} to VS Code Marketplace..."
+          VERSION=${{ steps.package-version.outputs.current-version }}
+          echo "Attempting to publish version ${VERSION}..."
           vsce publish --packagePath .
+
+      - name: Create and Push Git Tag (Best Effort)
+        # Run this even if publish failed, maybe tag still desired? Adjust if needed.
+        if: always()
+        env:
+          VERSION: ${{ steps.package-version.outputs.current-version }}
+        run: |
+          echo "Attempting to create and push tag v${VERSION}..."
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          # Attempt to create tag
+          git tag -a "v${VERSION}" -m "Release version ${VERSION}" || echo "Tag v${VERSION} likely already exists."
+          # Attempt to push tag
+          git push origin "v${VERSION}" || echo "Pushing tag v${VERSION} failed (likely already exists remotely)."
 
       - name: Add completion comment to PR
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            const version = process.env.VERSION
-            if (!version) {
-              console.log('VERSION environment variable not set. Skipping comment.')
-              return
-            }
+            const version = "${{ steps.package-version.outputs.current-version }}" // Get version directly
             const prNumber = context.payload.pull_request.number
             const repo = context.repo
+            // Optionally check job/step status here: steps.publish.outcome == 'success'
             
             await github.rest.issues.createComment({
               owner: repo.owner,
               repo: repo.repo,
               issue_number: prNumber,
-              body: `✅ PR was merged, version updated (if needed) to \`${version}\`. Tag \`v${version}\` created/pushed. Attempted publishing to VS Code Marketplace.`
+              body: `✅ PR merged. Attempted publishing version \`${version}\`. Tag \`v${version}\` created/pushed.` // Simplified comment 
             }) 
