@@ -1,4 +1,3 @@
-
 /**
  * PerfCopilot Chat Participant
  * 
@@ -310,14 +309,10 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                         const sanitizedKey = rawKey.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
                         this.outputChannel.appendLine(`Processing implementation: ${rawKey} -> ${sanitizedKey}`);
                         
-                        // Replace original function name and recursive calls with the sanitized key
-                        const processedCode = this.benchmarkService.replaceRecursiveCalls(
-                            code,
-                            originalEntryPoint,
-                            sanitizedKey
-                        );
+                        // FIX: Remove renaming. Use the raw code string.
+                        const processedCode = code;
                         processedImplementations[sanitizedKey] = processedCode;
-                        this.outputChannel.appendLine(` -> Code processed for ${sanitizedKey}. Length: ${processedCode.length}`);
+                        this.outputChannel.appendLine(` -> Code stored for ${sanitizedKey}. Length: ${processedCode.length}`);
                     }
                     // --- End Processing ---
 
@@ -334,12 +329,16 @@ ${Object.entries(processedImplementations).map(([key, code]) =>
 };
 
 module.exports = {
-    // entryPointName, // Removed - runner uses keys from implementations
+    entryPointName: ${JSON.stringify(benchmarkConfig.entryPointName)},
     testData,
     implementations
 };
                     `;
                     this.outputChannel.appendLine(`Generated benchmark module code. Length: ${benchmarkCode.length}`);
+
+                    // --- ADD LOGGING HERE ---
+                    this.outputChannel.appendLine(`--- Benchmark Module Code ---\n${benchmarkCode}\n---------------------------`);
+                    // ------------------------
 
                 } catch (error) {
                     this.outputChannel.appendLine(`Error generating benchmark code via AI: ${error}`);
@@ -422,13 +421,16 @@ Analyze the following JavaScript/TypeScript function for performance optimizatio
 ${functionCode}
 \`\`\`
 
-Generate exactly two distinct alternative implementations aiming for improved performance. Maintain the original function's signature and core functionality.
+Generate exactly two distinct alternative implementations aiming for improved performance.
+
+**CRITICAL REQUIREMENT: Functional Equivalence**
+The alternative implementations **MUST** produce the **exact same output** as the original function for **ALL** possible valid inputs. Functional equivalence is the highest priority, even over performance gains. Alternatives that fail a strict correctness check will be discarded. Maintain the original function's signature precisely.
 
 **Output Format:**
 Provide your response strictly as a JSON array containing two objects. Each object must have the following properties:
 - \`name\`: A string, either "Alternative 1" or "Alternative 2".
 - \`code\`: A string containing the complete JavaScript code for the alternative implementation.
-- \`explanation\`: A brief (1-2 sentence) string explaining the optimization technique used.
+- \`explanation\`: A brief (1-2 sentence) string explaining the optimization technique used (assuming it is functionally equivalent).
 
 **Example Response:**
 \`\`\`json
@@ -622,49 +624,7 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
      * Creates a prompt to ask the LLM to generate test inputs for a function.
      */
     private createInputGenerationPrompt(functionCode: string): string {
-        return `
-You are a test data generation assistant.
-Analyze the following JavaScript/TypeScript function:
-
-\`\`\`javascript
-${functionCode}
-\`\`\`
-
-**Your Task:**
-
-Generate a small JSON array containing 3-5 diverse test inputs suitable for calling this function. Consider:
-- Typical valid inputs.
-- Edge cases (e.g., empty arrays/strings, zero, null, undefined if applicable).
-- Different data types if the function seems flexible.
-
-**Output Format:**
-Provide your response *strictly* as a JSON array. Each element in the array represents the arguments for one function call. 
-- If the function takes one argument, each element is the argument value (e.g., \`[1, [], "test"]\`).
-- If the function takes multiple arguments, each element should be an array containing those arguments in the correct order (e.g., \`[[1, 2], [null, "a"], [10, undefined]]\`).
-- If the function takes no arguments, return an empty array \`[]\`
-
-**Example (Single Argument Function like sum(arr)):**
-\`\`\`json
-[
-  [1, 2, 3, 4, 5],
-  [],
-  [-1, 0, 1],
-  [1000000, 2000000]
-]
-\`\`\`
-
-**Example (Multi-Argument Function like add(a, b)):**
-\`\`\`json
-[
-  [1, 2],
-  [0, 0],
-  [-5, 5],
-  [10, null]
-]
-\`\`\`
-
-**IMPORTANT:** Output *only* the JSON array within a single \`\`\`json code block. Do not include any introductory text or explanations outside the JSON structure.
-Generate the JSON array of test inputs now.
-`;
+        // Escape backticks within the prompt string for the examples
+        return `\nYou are a test data generation assistant. Your ONLY output format is **strict, valid JSON**.\nAnalyze the following JavaScript/TypeScript function:\n\n\\\`\\\`\\\`javascript\n${functionCode}\n\\\`\\\`\\\`\n\n**Your Task:**\n\nGenerate a small JSON array containing 3-5 diverse test inputs suitable for calling this function.\n\n**CRITICAL Output Format Rules (MUST FOLLOW):**\n1.  The entire output MUST be a single JSON array, enclosed in a \\\`\\\`\\\`json code block.\n2.  Each element in the top-level array **must be another array** containing the arguments for a single function call in the correct order (e.g., \`[arg1, arg2]\`).\n3.  **ALL KEYS in any JSON object MUST be enclosed in DOUBLE QUOTES.** Example: \`{\"myKey\": \"myValue\"}\`. Unquoted keys (like \`{myKey: ...}\`) are INVALID.\n4.  Use only standard JSON data types: string (in double quotes), number, boolean (true/false), array ([...]), object ({...}), null.\n5.  Do NOT include comments (like // ...) inside the JSON output.\n6.  Do NOT include JavaScript syntax like \`undefined\` or function calls.\n\n**Example (For a function like \`myFunc(config, data)\`):**\n\\\`\\\`\\\`json\n[\n  [{ \"timeout\": 500, \"retry\": true, \"method\": \"POST\" }, [10, 20, 30]],\n  [{ \"timeout\": null, \"retry\": false, \"method\": \"GET\" }, []],\n  [{ \"method\": \"PUT\" }, [\"a\", \"b\"]]\n]\n\\\`\\\`\\\`\n\n**IMPORTANT:** Output *only* the valid JSON array as described. No text before or after the JSON code block.\nGenerate the strictly valid JSON array of test inputs now.\n`;
     }
 }

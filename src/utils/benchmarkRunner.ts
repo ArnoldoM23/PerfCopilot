@@ -49,55 +49,106 @@ const implementations = loadedModule.implementations as Record<string, string>; 
 // Find all implementation keys (e.g., 'Original', 'Alternative_1')
 const implementationKeys = Object.keys(implementations);
 
+// --- ADDED: Load entryPointName --- 
+const entryPointName = loadedModule.entryPointName as string;
+if (!entryPointName || typeof entryPointName !== 'string') {
+    console.error(`BENCHMARK_ERROR: Loaded module from ${functionsFilePath} is missing or has invalid 'entryPointName'.`);
+    process.exit(1);
+}
+// --------------------------------
+
 if (implementationKeys.length === 0) {
   console.error(`BENCHMARK_ERROR: No implementations found in the loaded module from ${functionsFilePath}`);
   process.exit(1);
+}
+
+// --- REVISED: Isolate function definitions --- 
+const benchmarkableFunctions: Record<string, (...args: any[]) => any> = {};
+
+try {
+    for (const implKey in implementations) {
+        const codeString = implementations[implKey];
+        
+        // Create a NEW context for EACH implementation's definition
+        const definitionContext = vm.createContext({
+            console: { log: () => {}, warn: () => {}, error: (msg: any) => { console.error(`Error in definition VM [${implKey}]: ${msg}`); } }, // Log errors from definition
+            Math: Math,
+            require: require, // Potentially needed by function code
+            module: { exports: {} } // Allow basic module patterns if used internally
+        });
+
+        try {
+             // Run code string to define the function inside the ISOLATED context
+            vm.runInContext(codeString, definitionContext, { timeout: 2000, displayErrors: true });
+            
+            // FIX: Retrieve the defined function by EVALUATING its name in the context
+            const fn = vm.runInContext(entryPointName, definitionContext, { timeout: 50 }); // Short timeout for retrieval
+            
+            if (typeof fn !== 'function') {
+                // This error now means the name didn't resolve to a function after definition
+                throw new Error(`Evaluating '${entryPointName}' in context did not return a function after executing code for key '${implKey}'.`);
+            }
+            // Store the actual function reference in our main map
+            benchmarkableFunctions[implKey] = fn;
+        } catch (definitionError) {
+             console.error(`BENCHMARK_SETUP_ERROR: Failed during function definition for key '${implKey}': ${definitionError}`);
+             // Decide whether to skip this impl or exit. Let's skip for now.
+             // process.exit(1); 
+             continue; // Skip this implementation if definition failed
+        }
+    }
+} catch (loopError) {
+    // Catch errors in the outer loop logic itself (unlikely)
+    console.error(`BENCHMARK_SETUP_ERROR: Unexpected error during implementation loop: ${loopError}`);
+    process.exit(1);
+}
+// --- END REVISED --- 
+
+// Check if we have any functions left after definition attempts
+if (Object.keys(benchmarkableFunctions).length === 0) {
+    console.error(`BENCHMARK_ERROR: No implementations could be successfully defined.`);
+    process.exit(1);
 }
 
 // Dynamically build the Benny suite
 try {
     const suite = benny.suite(
         'Function Performance Benchmark',
-        // Map over implementation keys ('Original', 'Alternative 1', ...)
-        ...implementationKeys.map(implKey => 
-            benny.add(implKey, () => {
-                // For each benchmark case, create a *new* isolated context
-                const context = {
-                    __testData: testData,
-                    // __entryPointName: entryPointName, // Removed from context
-                    // Add necessary globals (e.g., console, Math)
-                    console: {
-                        log: () => {}, warn: () => {}, error: () => {}
-                    },
-                    Math: Math
-                    // DO NOT pass the implementation code string here
-                };
-                vm.createContext(context);
-
+        // Map over the *prepared* functions using their keys ('Original', 'Alternative_1', ...)
+        ...Object.keys(benchmarkableFunctions).map(implKey => 
+            // The function Benny times:
+            benny.add(implKey, () => { 
                 try {
-                    // Run the full code for THIS implementation inside the context
-                    vm.runInContext(implementations[implKey], context, { timeout: 1000 });
+                    // Get the *pre-defined* function from our local map
+                    const funcToRun = benchmarkableFunctions[implKey];
 
-                    // Get the benchmark function by evaluating its name within the context
-                    const entryFn = vm.runInContext(implKey, context);
-                    if (typeof entryFn !== 'function') {
-                        // Throw error specific to this case if function not found *after* running code
-                        throw new Error(`Benchmark function '${implKey}' not found in context after running code.`); // Updated error message
+                    // Call the function with the test data arguments
+                    // We assume testData is structured correctly for the function's parameters
+                    // Example for findAllMatchingExpoResolutionPathsOld(indexMapping, resolutionInfo):
+                    if(typeof funcToRun === 'function') {
+                        // Check if testData itself has the properties, typical for object args
+                        if (testData && typeof testData === 'object' && 'indexMapping' in testData && 'resolutionInfo' in testData) {
+                             funcToRun(testData.indexMapping, testData.resolutionInfo);
+                        } else {
+                            // Fallback or alternative: if testData is an array of args
+                            // funcToRun(...testData); // If testData = [arg1, arg2]
+                            // Or just pass testData if the function expects the whole object
+                            funcToRun(testData);
+                        }
+                    } else {
+                        // Should not happen if setup phase succeeded
+                        console.error(`BENCHMARK_RUNTIME_ERROR [${implKey}]: Function reference not found.`);
                     }
-
-                    // Execute the benchmark function with the test data
-                    entryFn(testData);
-                } catch (execError) {
-                     // Catch errors during runInContext or function execution within the benchmark case
-                     console.error(`BENCHMARK_EXECUTION_ERROR [${implKey}]: ${execError}`);
-                     // Allow benny to potentially proceed, but log the error clearly.
-                     // Alternatively, re-throw to stop the suite: throw execError;
+                } catch (runtimeError) {
+                     // Catch errors *during* the timed execution
+                     console.error(`BENCHMARK_RUNTIME_ERROR [${implKey}]: ${runtimeError}`);
+                     // Log runtime error but allow Benny to continue if possible
                 }
             })
         ),
-        benny.cycle(),
+        benny.cycle(), // Default cycle behavior
         benny.complete((summary: any) => {
-            const formattedResults = summary.results.map((res: any) => ({ 
+            const formattedResults = summary?.results?.map((res: any) => ({ 
                 name: res.name, 
                 ops: res.ops, // Use ops/sec from benny
                 // margin: res.margin // Benny v3 might not have margin directly here, calculate if needed

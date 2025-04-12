@@ -219,10 +219,11 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
       mockLanguageModel.sendRequest.mockResolvedValue(createMockLLMResponse(`\`\`\`json\n${JSON.stringify(testInputs)}\n\`\`\``));
 
       // Configure the behavior returned by the vm.runInContext *lookup*
-      (globalThis as any).mockFunctionBehavior = (...args: any[]) => { 
+      const sharedBehavior = (...args: any[]) => {
           // Behavior for both original and equivalent is the same: add
           return args[0] + args[1];
       };
+      (globalThis as any).mockFunctionBehavior = sharedBehavior;
 
       // Act
       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "add");
@@ -230,72 +231,82 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
       // Assert...
       expect(verified).toHaveLength(1);
       expect(verified[0]).toBe(equivalentAlternative);
-      // FIX: Updated call count expectation (1 call per function exec)
-      // Orig(exec*2)=2, AltE(exec*2)=2
-      expect(mockBehavior.callCount).toBe(4 + 4); 
+      // Verify call count: 2 inputs * (1 original + 1 alternative) * 2 vm calls (define + execute) = 8
+      expect(mockBehavior.callCount).toBe(8);
       expect(mockCreateInputGenerationPrompt).toHaveBeenCalledTimes(1);
   });
 
    it('should reject non-equivalent alternatives', async () => {
      // Arrange...
      const alternatives = [equivalentAlternative, nonEquivalentAlternative];
-     const testInputs = [[1, 2], [5, 5]];
+     const testInputs = [[1, 2], [5, 5]]; // Result: 3, 10 (original/equiv); -1, 0 (non-equiv)
      mockLanguageModel.sendRequest.mockResolvedValue(createMockLLMResponse(`\`\`\`json\n${JSON.stringify(testInputs)}\n\`\`\``));
 
       // Configure the behavior returned by the vm.runInContext *lookup*
-       (globalThis as any).mockFunctionBehavior = (...args: any[]) => { 
-           // Need to access the mock correctly now
+       (globalThis as any).mockFunctionBehavior = (...args: any[]) => {
+           // Need to access the mock context to see which function is being called
            const mockVmCreateContext = vm.createContext as jest.Mock;
            const currentContext = mockVmCreateContext.mock.contexts?.[mockVmCreateContext.mock.contexts.length - 1];
-           const callingCode = currentContext?.__callingCode;
-           if (callingCode === originalFunction.code || callingCode === equivalentAlternative.code) { return args[0] + args[1]; }
-           if (callingCode === nonEquivalentAlternative.code) { return args[0] - args[1]; }
-           return undefined;
-       };
+           const callingCode = currentContext?.__callingCode; // Get the defined code
 
-       // Act
-       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "add");
+           if (callingCode === nonEquivalentAlternative.code) {
+               return args[0] - args[1]; // Non-equivalent behavior
+           } else {
+               return args[0] + args[1]; // Original & Equivalent behavior
+           }
+      };
+
+      // Act
+      const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "addOrSubtract"); // Updated entryPointName for clarity
 
        // Assert...
-       expect(verified).toHaveLength(1);
+       expect(verified).toHaveLength(1); // Only the equivalent one should pass
        expect(verified[0]).toBe(equivalentAlternative);
-       // FIX: Updated call count expectation
-       // Orig(exec*2)=2, AltE(exec*2)=2, AltNE(exec*1)=1 -> Stops after first input fails
-       expect(mockBehavior.callCount).toBe(4 + 4 + 2);
-
-       // Verify that error messages were logged
-       expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("REJECTED (Not equivalent)"));
+       // Verify call count: 
+       // Inputs: 2
+       // Original: Define(2) + Execute(2) = 4
+       // Equivalent Alt: Define(2) + Execute(2) = 4
+       // Non-Equivalent Alt: Define(2) + Execute(1 - fails on first input) = 3
+       // Total = 4 + 4 + 3 = 11
+       expect(mockBehavior.callCount).toBe(11);
+       expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining(`REJECTED (Not equivalent) ${nonEquivalentAlternative.name}`));
    });
 
     it('should reject alternatives that throw errors during execution', async () => {
        // Arrange...
-       const alternatives = [errorAlternative];
-       const testInputs = [[1, 1]];
+       const alternatives = [errorAlternative]; // Only the error alternative
+       const testInputs = [[1, 1]]; // One input is enough
        mockLanguageModel.sendRequest.mockResolvedValue(createMockLLMResponse(`\`\`\`json\n${JSON.stringify(testInputs)}\n\`\`\``));
 
-       // Configure the mock function behavior to throw when IT is called
-       // (The error no longer originates from inside the vm.runInContext mock)
-       (globalThis as any).mockFunctionBehavior = (...args: any[]) => { 
-            const mockVmCreateContext = vm.createContext as jest.Mock;
-            const currentContext = mockVmCreateContext.mock.contexts?.[mockVmCreateContext.mock.contexts.length - 1];
-            const callingCode = currentContext?.__callingCode;
-            if (callingCode === originalFunction.code) { return args[0] + args[1]; } 
-            if (callingCode === errorAlternative.code) { throw new Error('Alt Error!'); } 
-            return undefined;
-        };
+       // Configure the behavior returned by the vm.runInContext *lookup*
+       (globalThis as any).mockFunctionBehavior = (...args: any[]) => {
+           const mockVmCreateContext = vm.createContext as jest.Mock;
+           const currentContext = mockVmCreateContext.mock.contexts?.[mockVmCreateContext.mock.contexts.length - 1];
+           const callingCode = currentContext?.__callingCode;
 
-        // The test should now expect the error to be caught by the outer try/catch
-        // in verifyFunctionalEquivalence when executeFunctionSafely re-throws.
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "errorFunc");
+           if (callingCode === errorAlternative.code) {
+               throw new Error("Alt Error!"); // Throw during execution lookup
+           } else {
+               return args[0] + args[1]; // Original function behavior
+           }
+       };
 
-        expect(verified).toHaveLength(0);
-        // FIX: Updated call count expectation
-        // Orig(exec*1)=1, AltE(exec*1)=1 -> The *call* to AltE throws.
-        expect(mockBehavior.callCount).toBe(2 + 2); 
-        expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("REJECTED (Not equivalent)"));
-        // Check for the error message originating from executeFunctionSafely
-        expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("Execution failed for errorFunc: Alt Error!"));
-    });
+       // Act
+       const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "addOrError");
+
+       // Assert...
+       expect(verified).toHaveLength(0); // No alternatives should be verified
+       // Verify call count: 
+       // Inputs: 1
+       // Original: Define(1) + Execute(1) = 2
+       // Error Alt: Define(1) + Execute(1 - throws) = 2 
+       // Total = 2 + 2 = 4
+       expect(mockBehavior.callCount).toBe(4);
+       // Check for rejection message
+       expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining(`REJECTED (Execution Error) ${errorAlternative.name}`));
+       // Check for the specific error logged by executeFunctionSafely
+       expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining(`Execution failed for ${errorAlternative.name}: Alt Error!`));
+   });
 
     it('should stop processing if cancellation token is triggered during verification', async () => {
         // Arrange...
@@ -328,45 +339,63 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
     });
 
     it('should handle syntax errors in alternative functions gracefully', async () => {
-        // Arrange
-        const alternatives = [syntaxErrorFunc];
-        const testInputs = [[1, 1]];
+        // Arrange...
+        const alternatives = [syntaxErrorFunc]; // Use the predefined syntax error function
+        const testInputs = [[1]]; // One input needed for original function execution
         mockLanguageModel.sendRequest.mockResolvedValue(createMockLLMResponse(`\`\`\`json\n${JSON.stringify(testInputs)}\n\`\`\``));
 
-        // Configure function behavior (only original needs to work)
-        (globalThis as any).mockFunctionBehavior = (...args: any[]) => args[0] + args[1];
-        
+        // Configure mock behavior for the original function (alternative won't execute)
+        (globalThis as any).mockFunctionBehavior = (...args: any[]) => {
+             const mockVmCreateContext = vm.createContext as jest.Mock;
+             const currentContext = mockVmCreateContext.mock.contexts?.[mockVmCreateContext.mock.contexts.length - 1];
+             const callingCode = currentContext?.__callingCode;
+
+             if (callingCode === originalFunction.code) {
+                 return args[0] + (args[1] || 0); // Simple behavior for original func
+             } 
+             // No behavior needed for syntax error func as definition fails
+             return undefined; 
+        };
+
         // Act
         const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(originalFunction, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "syntaxTest");
 
-        // Assert
-        expect(verified).toHaveLength(0);
-        // FIX: Updated call count expectation
-        // Orig(exec*1)=1, AltSyntax(exec*1)=1 -> Throws on definition
-        expect(mockBehavior.callCount).toBe(2 + 1);
-        
+        // Assert...
+        expect(verified).toHaveLength(0); // Syntax error alternative should be rejected
+        // Verify call count: 
+        // Inputs: 1
+        // Original: Define(1) + Execute(1) = 2
+        // Syntax Error Alt: Define(1 - throws) = 1
+        // Total = 2 + 1 = 3
+        expect(mockBehavior.callCount).toBe(3);
         // Verify rejection and error messages
-        expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("REJECTED (Not equivalent)"));
-        expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("Execution failed for syntaxTest: Unexpected end of input"));
+        expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining(`REJECTED (Syntax Error) ${syntaxErrorFunc.name}`));
+        // Check for the specific error logged by executeFunctionSafely during definition
+        expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining(`Definition failed for ${syntaxErrorFunc.name}: Unexpected end of input`));
     });
 
     it('should handle a very simple case correctly', async () => {
-        // Arrange
+        // Arrange...
         const alternatives = [simpleAlt];
-        const testInputs = [[5], [0], [-10]];
+        const testInputs = [[1], [5], [-3]]; // Results: 2, 10, -6
         mockLanguageModel.sendRequest.mockResolvedValue(createMockLLMResponse(`\`\`\`json\n${JSON.stringify(testInputs)}\n\`\`\``));
 
-        // Configure function behavior
-        (globalThis as any).mockFunctionBehavior = (...args: any[]) => 2 * args[0];
+        // Configure behavior: n * 2 for both functions
+        const sharedBehavior = (...args: any[]) => args[0] * 2;
+        (globalThis as any).mockFunctionBehavior = sharedBehavior;
 
         // Act
-        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(simpleFunc, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "simpleMultiply");
+        const verified = await CorrectnessVerifier.verifyFunctionalEquivalence(simpleFunc, alternatives, mockLanguageModel, mockCreateInputGenerationPrompt, mockOutputChannel, mockCancellationToken.token, "multiplyByTwo");
 
         // Assert
-        expect(verified).toHaveLength(1);
+        expect(verified).toHaveLength(1); // Should verify the simple alternative
         expect(verified[0]).toBe(simpleAlt);
-        // FIX: Correct call count expectation for 2-step execution
-        // Orig(exec*3*2_calls)=6, AltS(exec*3*2_calls)=6 \n        expect(mockBehavior.callCount).toBe(6 + 6); // Should be 12
+        // Verify call count: 
+        // Inputs: 3
+        // Original: Define(1) + Execute(3) = 4
+        // Simple Alt: Define(1) + Execute(3) = 4
+        // Total = 4 + 4 = 8
+        expect(mockBehavior.callCount).toBe(8);
     });
 
     // --- REMOVED the tests that were specifically using mockExecuteFunctionSafely --- 

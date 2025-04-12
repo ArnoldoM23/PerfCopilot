@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as vm from 'vm';
 import * as util from 'util';
 import { FunctionImplementation } from '../models/types';
+import { extractFunctionName } from './functions';
 
 /**
  * Verifies the functional equivalence of alternative function implementations 
@@ -97,7 +98,7 @@ export async function verifyFunctionalEquivalence(
         if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         const args = Array.isArray(input) ? input : [input]; // Ensure args are always in an array
         try {
-            const output = await executeFunctionSafely(originalFunction.code, originalFunctionName, args);
+            const output = await executeFunctionSafely(originalFunction.code, originalFunctionName, args, outputChannel);
             expectedOutputs.push({ input, output });
         } catch (error: any) {
             outputChannel.appendLine(`[CorrectnessVerifier] Original function ('${originalFunctionName}') failed for input ${JSON.stringify(input)}: ${error.message}`);
@@ -115,6 +116,16 @@ export async function verifyFunctionalEquivalence(
         let isEquivalent = true;
         let comparisonPerformed = false; // --- ADDED: Track if any valid comparison happened ---
         outputChannel.appendLine(`--- Verifying ${alt.name} ---`);
+
+        // --- FIX: Extract the actual function name from the alternative code --- 
+        const altFunctionName = extractFunctionName(alt.code);
+        if (!altFunctionName) {
+            outputChannel.appendLine(` - Could not extract function name from ${alt.name}. Skipping verification for this alternative.`);
+            continue; // Skip if we can't find the function name in the alternative code
+        }
+        outputChannel.appendLine(` - Identified function name in ${alt.name} as: ${altFunctionName}`);
+        // --- End Fix ---
+
         for (let i = 0; i < testInputs.length; i++) {
             if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
             const input = testInputs[i];
@@ -130,11 +141,13 @@ export async function verifyFunctionalEquivalence(
             comparisonPerformed = true; 
 
             try {
-                const altOutput = await executeFunctionSafely(alt.code, originalFunctionName, args);
+                // --- FIX: Use the extracted altFunctionName --- 
+                const altOutput = await executeFunctionSafely(alt.code, altFunctionName, args, outputChannel);
+                // --- End Fix ---
                 
                 // Compare using JSON stringification for robustness
-                const expectedJson = JSON.stringify(expected.output);
-                const altJson = JSON.stringify(altOutput);
+                const expectedJson = JSON.stringify(expected.output?.result);
+                const altJson = JSON.stringify(altOutput.result);
 
                 if (altJson !== expectedJson) {
                     outputChannel.appendLine(` - Input ${i + 1}: FAILED. Expected JSON: ${expectedJson}, Got JSON: ${altJson}`);
@@ -147,7 +160,8 @@ export async function verifyFunctionalEquivalence(
                     outputChannel.appendLine(` - Input ${i + 1}: PASSED`);
                 }
             } catch (error: any) {
-                outputChannel.appendLine(` - Input ${i + 1}: FAILED (Execution Error). Error: ${error.message}`);
+                // Use altFunctionName in the error message
+                outputChannel.appendLine(` - Input ${i + 1}: FAILED (Execution Error for ${altFunctionName}). Error: ${error.error}`);
                 isEquivalent = false;
                 break; // Alternative threw an error, not equivalent
             }
@@ -161,7 +175,7 @@ export async function verifyFunctionalEquivalence(
         } else if (!comparisonPerformed) {
              outputChannel.appendLine(` => ${alt.name}: INDETERMINATE (Original function failed on all inputs)`);
         } else {
-            outputChannel.appendLine(` => ${alt.name}: REJECTED (Not equivalent)`);
+            outputChannel.appendLine(` => ${alt.name}: REJECTED (Not equivalent or execution error)`);
         }
     }
 
@@ -175,54 +189,55 @@ export async function verifyFunctionalEquivalence(
  * @param functionCode - The string representation of the function.
  * @param functionName - The name of the function.
  * @param args - An array of arguments to pass to the function.
- * @returns The result of the function execution.
- * @throws If the code cannot be compiled or execution fails.
+ * @param outputChannel - The output channel for logging.
+ * @param timeoutMs - The timeout in milliseconds for the function execution.
+ * @returns A promise that resolves to the result of the function execution.
+ * @throws If the code cannot be compiled, execution fails, or times out.
  */
-export async function executeFunctionSafely(functionCode: string, functionName: string, args: any[]): Promise<any> {
-    // Revert to context that includes __result
-    const context = {
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        __args: args,
-        console: { log: () => {}, warn: () => {}, error: () => {} },
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        Math: Math,
-        // eslint-disable-next-line @typescript-eslint/naming-convention
-        __result: undefined as any
-    };
-    vm.createContext(context);
-
-    let isAsync = false;
-    let functionRef: any; // Revert to less specific type
+async function executeFunctionSafely(
+    code: string, 
+    entryPointName: string,
+    args: any[], 
+    outputChannel: vscode.OutputChannel,
+    timeoutMs: number = 1000 // Default timeout
+): Promise<{ result?: any; error?: string }> {
+    const context = vm.createContext({
+        console: { log: () => {}, error: (msg: any) => { throw new Error(msg); }, warn: () => {} }, // Throw on console.error
+        module: { exports: {} }, // Basic module context
+        require: require, // Allow require if absolutely necessary (use cautiously)
+        // Pass arguments into the context if needed, but direct call is safer
+        // __args: args 
+    });
 
     try {
-        // Revert async check if needed, or keep simple one
-        isAsync = functionCode.includes('async'); // Simple check
+        // Step 1: Define the function
+        vm.runInContext(code, context, { timeout: timeoutMs, displayErrors: true }); 
 
-        // Step 1: Run the entire user code in the context to define functions (timeout 1000)
-        vm.runInContext(functionCode, context, { timeout: 1000 });
-
-        // Step 2: Get the function reference by evaluating its name in the context (timeout 50)
-        functionRef = vm.runInContext(functionName, context, { timeout: 50 });
-
-        // Step 3: Check if we got a function
-        if (typeof functionRef !== 'function') {
-            throw new Error(`Target function '${functionName}' was not defined or is not a function after evaluating the code.`);
+        // Step 2: Retrieve the defined function using the entry point name
+        const funcToExecute = context[entryPointName];
+        if (typeof funcToExecute !== 'function') {
+            return { error: `Function '${entryPointName}' not defined in context after execution.` };
         }
 
-        // Step 4: Call the function reference
-        if (isAsync) {
-             context.__result = await functionRef(...context.__args);
-        } else {
-             context.__result = functionRef(...context.__args);
+        // Step 3: Execute the function with arguments
+        // Use vm.runInContext again for the *call* to apply timeout
+        // Note: This requires function and args to be accessible within the context
+        context.__args = args; // Make args available in context
+        const executionCode = `module.exports.result = ${entryPointName}(...__args);`;
+
+        vm.runInContext(executionCode, context, { timeout: timeoutMs, displayErrors: true });
+        
+        // Retrieve result from context
+        const result = (context.module as any).exports.result;
+        return { result };
+
+    } catch (e: any) {
+        // Handle errors, including potential TimeoutError from vm
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        // Check if it's a timeout error
+        if (errorMessage.includes('timed out') || (e.code && e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT')) {
+             return { error: `Execution timed out after ${timeoutMs}ms` };
         }
-
-        return context.__result; // Return the stored result
-
-    } catch (error: any) {
-        const errorMessage = `Execution failed for ${functionName}: ${error.message}`;
-        console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack);
-        const executionError = new Error(errorMessage);
-        executionError.stack = error.stack || executionError.stack;
-        throw executionError;
+        return { error: errorMessage };
     }
 } 
