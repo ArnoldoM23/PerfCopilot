@@ -62,9 +62,9 @@ scriptRunInContextImplementation = (code: string, context: vm.Context, options?:
     try {
         mockBehavior.callCount++;
 
-        // Cancellation Check (can remain simple)
+        // Cancellation Check
         if (mockBehavior.shouldTriggerCancellation && 
-            mockBehavior.callCount >= (mockBehavior.cancellationThreshold || 4)) { // Revert threshold if needed
+            mockBehavior.callCount >= (mockBehavior.cancellationThreshold || 4)) {
              const tokenSource = (globalThis as any).mockCancellationTokenSource;
             if (tokenSource && !tokenSource.token.isCancellationRequested) {
                  tokenSource.cancel();
@@ -73,21 +73,18 @@ scriptRunInContextImplementation = (code: string, context: vm.Context, options?:
         
         // REVERT: Simulate the function LOOKUP call (short timeout)
         if (options && typeof options === 'object' && options.timeout === 50) {
-             // The lookup itself doesn't throw execution errors in this model
-             // It just returns the mock function behavior configured for the test
              return (globalThis as any).mockFunctionBehavior || ((..._args: any[]) => undefined); 
         }
         // REVERT: Simulate the code DEFINITION run (longer timeout)
         else if (options && typeof options === 'object' && options.timeout === 1000) {
             // If the code being defined is the syntax error one, throw now
-            if (code === syntaxErrorFunc.code) { 
+            if (code === syntaxErrorFunc.code) {
                  throw new SyntaxError('Unexpected end of input');
             }
             // Store the code being defined
             if (context) {
                  context.__callingCode = code; // Store the full code defined
             }
-            // Definition doesn't return a value
             return undefined; 
         }
         
@@ -116,7 +113,7 @@ jest.mock('vscode', () => ({
             get isCancellationRequested() { return _isCancelled; },
             onCancellationRequested: jest.fn((listener) => {
                 listeners.push(listener);
-                return { dispose: () => { const index = listeners.indexOf(listener); if (index > -1) listeners.splice(index, 1); } };
+                return { dispose: () => { const index = listeners.indexOf(listener); if (index > -1) {listeners.splice(index, 1);} } };
             })
         };
         return {
@@ -251,8 +248,8 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
            const mockVmCreateContext = vm.createContext as jest.Mock;
            const currentContext = mockVmCreateContext.mock.contexts?.[mockVmCreateContext.mock.contexts.length - 1];
            const callingCode = currentContext?.__callingCode;
-           if (callingCode === originalFunction.code || callingCode === equivalentAlternative.code) return args[0] + args[1];
-           if (callingCode === nonEquivalentAlternative.code) return args[0] - args[1];
+           if (callingCode === originalFunction.code || callingCode === equivalentAlternative.code) { return args[0] + args[1]; }
+           if (callingCode === nonEquivalentAlternative.code) { return args[0] - args[1]; }
            return undefined;
        };
 
@@ -282,8 +279,8 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
             const mockVmCreateContext = vm.createContext as jest.Mock;
             const currentContext = mockVmCreateContext.mock.contexts?.[mockVmCreateContext.mock.contexts.length - 1];
             const callingCode = currentContext?.__callingCode;
-            if (callingCode === originalFunction.code) return args[0] + args[1]; 
-            if (callingCode === errorAlternative.code) throw new Error('Alt Error!'); 
+            if (callingCode === originalFunction.code) { return args[0] + args[1]; } 
+            if (callingCode === errorAlternative.code) { throw new Error('Alt Error!'); } 
             return undefined;
         };
 
@@ -438,7 +435,7 @@ describe('Correctness Verifier - verifyFunctionalEquivalence', () => {
         (globalThis as any).mockFunctionBehavior = async (...args: any[]) => { 
              await new Promise(r => setTimeout(r, 100)); // Make it slow
              const currentToken = mockCancellationToken.token;
-             if (currentToken?.isCancellationRequested) throw new Error('Operation cancelled internally');
+             if (currentToken?.isCancellationRequested) { throw new Error('Operation cancelled internally'); }
              return args[0] + args[1];
          };
 
