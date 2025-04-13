@@ -81,12 +81,35 @@ try {
                     // Get the benchmark function by evaluating its name within the context
                     const entryFn = vm.runInContext(implKey, context);
                     if (typeof entryFn !== 'function') {
-                        // Throw error specific to this case if function not found *after* running code
-                        throw new Error(`Benchmark function '${implKey}' not found in context after running code.`); // Updated error message
+                        throw new Error(`Benchmark function '${implKey}' not found in context after running code.`);
                     }
 
-                    // Execute the benchmark function with the test data
-                    entryFn(testData);
+                    // --- FIX 2: Correctly handle testData --- 
+                    // The LLM is asked to provide testData as an array of test cases.
+                    // For benchmarking, we use the arguments from the first test case.
+                    // testData might be [[arg1, arg2], ...] or [arg1, arg2, ...] or just arg for single-arg funcs.
+                    // We need to handle the case where the function takes multiple arguments. The test case itself will be an array.
+                    
+                    // Use the __testData from the context, which is the full array of test cases.
+                    const allTestData = context.__testData; 
+                    if (!Array.isArray(allTestData) || allTestData.length === 0) {
+                        // If no test data or not an array, try calling with no args or handle error
+                        // For now, let's assume functions require data if provided.
+                        throw new Error('Benchmark testData is missing or not an array.');
+                    }
+
+                    // Use the arguments from the *first* test case for the benchmark run.
+                    const argsForRun = allTestData[0];
+
+                    if (Array.isArray(argsForRun)) {
+                        // If the first test case is an array, spread its elements as arguments
+                        entryFn(...argsForRun);
+                    } else {
+                         // If the first test case is not an array, it's a single argument
+                        entryFn(argsForRun);
+                    }
+                    // --- End Fix 2 ---
+                    
                 } catch (execError) {
                      // Catch errors during runInContext or function execution within the benchmark case
                      console.error(`BENCHMARK_EXECUTION_ERROR [${implKey}]: ${execError}`);

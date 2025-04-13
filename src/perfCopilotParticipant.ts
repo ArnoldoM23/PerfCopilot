@@ -75,6 +75,50 @@ export class PerfCopilotParticipant {
     }
     
     /**
+     * Helper function to send request to LLM with retry logic.
+     */
+    private async sendRequestWithRetry(
+        languageModel: vscode.LanguageModelChat,
+        messages: vscode.LanguageModelChatMessage[],
+        options: vscode.LanguageModelChatRequestOptions,
+        token: vscode.CancellationToken,
+        maxRetries: number = 1 // Default to 1 retry (2 attempts total)
+    ): Promise<vscode.LanguageModelChatResponse> {
+        let attempts = 0;
+        while (attempts <= maxRetries) {
+            attempts++;
+            try {
+                this.outputChannel.appendLine(`[LLM Request Attempt ${attempts}/${maxRetries + 1}] Sending...`);
+                const response = await languageModel.sendRequest(messages, options, token);
+                // Basic check: Does the response stream seem valid?
+                // We can't fully consume the stream here, but we can check if it exists.
+                if (!response || !response.stream) { 
+                    throw new Error('LLM response or response stream is invalid.');
+                }
+                this.outputChannel.appendLine(`[LLM Request Attempt ${attempts}] Success.`);
+                return response;
+            } catch (error: any) {
+                // Convert error to string before logging
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                this.outputChannel.appendLine(`[LLM Request Attempt ${attempts}] FAILED: ${errorMessage}`);
+                if (attempts > maxRetries) {
+                    this.outputChannel.appendLine(`[LLM Request] Max retries reached. Throwing last error.`);
+                    throw error; // Throw the last error after all retries
+                }
+                // Optional: Add a small delay before retrying
+                if (!token.isCancellationRequested) {
+                     await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay
+                }
+                if (token.isCancellationRequested) {
+                     throw new Error('Operation cancelled by user during retry wait.');
+                }
+            }
+        }
+        // Should not be reachable, but satisfies compiler
+        throw new Error('sendRequestWithRetry logic error: loop completed unexpectedly.');
+    }
+
+    /**
      * Creates a request handler function using vscode.lm for LLM interaction.
      */
     private createRequestHandler(): vscode.ChatRequestHandler {
@@ -161,13 +205,21 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 const alternativesMessages = [vscode.LanguageModelChatMessage.User(alternativesPrompt)];
                 let alternativesResponseText = '';
                 try {
-                    const alternativesRequest = await languageModel.sendRequest(alternativesMessages, {}, token);
-                    for await (const chunk of alternativesRequest.text) {
+                    // FIX: Use retry helper
+                    const alternativesRequest = await this.sendRequestWithRetry(languageModel, alternativesMessages, {}, token);
+                    
+                    for await (const chunk of alternativesRequest.stream) { 
                         if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
                             break;
                         }
-                        alternativesResponseText += chunk;
+                        
+                        // --- Correct Handling based on Docs ---
+                        if (chunk instanceof vscode.LanguageModelTextPart) {
+                            alternativesResponseText += chunk.value; // Access the 'value' property
+                        } 
+                        // --- End Correct Handling ---
+                         
                     }
                     if (token.isCancellationRequested) {
                         response.markdown("Operation cancelled by user.");
@@ -212,15 +264,24 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     // Use only verified alternatives for benchmarking
                     const benchmarkPrompt = this.createBenchmarkPrompt(originalFunction, alternatives);
                     const benchmarkMessages = [vscode.LanguageModelChatMessage.User(benchmarkPrompt)];
+                    
+                    // FIX: Use retry helper
+                    const benchmarkRequest = await this.sendRequestWithRetry(languageModel, benchmarkMessages, {}, token);
+                    
+                    // FIX: Use the same stream handling as for alternatives
                     let benchmarkResponseText = '';
-                    const benchmarkRequest = await languageModel.sendRequest(benchmarkMessages, {}, token);
-
-                    for await (const chunk of benchmarkRequest.text) {
+                    for await (const chunk of benchmarkRequest.stream) { 
                         if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
                             break;
                         }
-                        benchmarkResponseText += chunk;
+                        
+                        if (chunk instanceof vscode.LanguageModelTextPart) {
+                            benchmarkResponseText += chunk.value; // Access the 'value' property
+                        } else {
+                            // Log unexpected chunk types for diagnostics
+                            this.outputChannel.appendLine(`[Benchmark Config Stream] Received unexpected chunk type: ${typeof chunk} - ${JSON.stringify(chunk)}`);
+                        }
                     }
                     if (token.isCancellationRequested) { return {}; }
 
@@ -377,13 +438,22 @@ module.exports = {
                 const explanationMessages = [vscode.LanguageModelChatMessage.User(explanationPrompt)];
                 
                 try {
-                    const explanationRequest = await languageModel.sendRequest(explanationMessages, {}, token);
-                    for await (const chunk of explanationRequest.text) {
+                    // FIX: Use retry helper
+                    const explanationRequest = await this.sendRequestWithRetry(languageModel, explanationMessages, {}, token);
+                    
+                    for await (const chunk of explanationRequest.stream) { // Use stream property
                          if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
                             break;
                          }
-                         response.markdown(chunk);
+                         // --- Correct Handling based on Docs ---
+                         if (chunk instanceof vscode.LanguageModelTextPart) {
+                             response.markdown(chunk.value); // Display text part value
+                         } else {
+                            // Log unexpected chunk types for diagnostics 
+                            this.outputChannel.appendLine(`[Explanation Stream] Received unexpected chunk type: ${typeof chunk} - ${JSON.stringify(chunk)}`);
+                         }
+                         // --- End Correct Handling ---
                     }
                      if (token.isCancellationRequested) {return {};}
                     this.outputChannel.appendLine(`Finished streaming explanation.`);
@@ -640,9 +710,10 @@ Generate a small JSON array containing 3-5 diverse test inputs suitable for call
 
 **Output Format:**
 Provide your response *strictly* as a JSON array. Each element in the array represents the arguments for one function call. 
-- If the function takes one argument, each element is the argument value (e.g., \`[1, [], "test"]\`).
-- If the function takes multiple arguments, each element should be an array containing those arguments in the correct order (e.g., \`[[1, 2], [null, "a"], [10, undefined]]\`).
+- If the function takes one argument, each element is the argument value (e.g., \`[1, [], \"test\"]\`).
+- If the function takes multiple arguments, each element should be an array containing those arguments in the correct order (e.g., \`[[1, 2], [null, \"a\"], [10, undefined]]\`).
 - If the function takes no arguments, return an empty array \`[]\`
+- **Ensure all object keys within the generated data are enclosed in double quotes (e.g., \`\"key\": value\`) as required by strict JSON format.**
 
 **Example (Single Argument Function like sum(arr)):**
 \`\`\`json
