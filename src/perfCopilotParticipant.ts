@@ -291,8 +291,15 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     const match = jsonBlockRegex.exec(benchmarkResponseText);
                     if (match && match[1]) {
                         const jsonString = match[1].trim();
+                        this.outputChannel.appendLine(`[DEBUG] Extracted benchmark config JSON string:\n${jsonString}`); // Log the raw JSON
                         try {
                             benchmarkConfig = JSON.parse(jsonString);
+                            // Log the parsed config structure
+                            this.outputChannel.appendLine(`[DEBUG] Parsed benchmarkConfig object:\n${JSON.stringify(benchmarkConfig, null, 2)}`);
+
+                            // Specifically log the parsed testData
+                            this.outputChannel.appendLine(`[DEBUG] Parsed testData type: ${typeof benchmarkConfig.testData}, value: ${JSON.stringify(benchmarkConfig.testData)}`);
+
                             // Basic validation
                             if (!benchmarkConfig.entryPointName || typeof benchmarkConfig.entryPointName !== 'string' ||
                                 !benchmarkConfig.implementations || typeof benchmarkConfig.implementations !== 'object' ||
@@ -381,6 +388,9 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     }
                     // --- End Processing ---
 
+                    // Log the final testData and implementations just before module creation
+                    this.outputChannel.appendLine(`[DEBUG] Final testData for benchmark module: ${JSON.stringify(benchmarkConfig.testData)}`);
+                    this.outputChannel.appendLine(`[DEBUG] Final implementations for benchmark module keys: ${Object.keys(processedImplementations).join(', ')}`);
 
                     // Construct the actual code module to be run by benchmarkRunner.js
                     benchmarkCode = `
@@ -399,6 +409,9 @@ module.exports = {
     implementations
 };
                     `;
+                    // Log the generated benchmark code
+                    this.outputChannel.appendLine(`[DEBUG] Generated benchmark module code:\n---\n${benchmarkCode}\n---`);
+
                     this.outputChannel.appendLine(`Generated benchmark module code. Length: ${benchmarkCode.length}`);
 
                 } catch (error) {
@@ -599,6 +612,7 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
                 this.outputChannel.appendLine(`Could not extract a JSON array string from the response.`);
                 return [];
             }
+            
 
             const parsed = JSON.parse(jsonString);
 

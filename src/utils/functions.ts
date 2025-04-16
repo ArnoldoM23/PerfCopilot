@@ -78,7 +78,7 @@ export async function createTempFile(content: string, filename: string): Promise
  */
 export function runNodeScript(scriptPath: string, args: string[] = []): Promise<string> {
     return new Promise((resolve, reject) => {
-        // Spawn a Node.js process
+        console.log(`[runNodeScript] Spawning: node ${scriptPath} ${args.join(' ')}`);
         const childProcess = spawn('node', [scriptPath, ...args]);
         
         let outputData = '';
@@ -86,29 +86,40 @@ export function runNodeScript(scriptPath: string, args: string[] = []): Promise<
         
         // Collect stdout data
         childProcess.stdout.on('data', (data) => {
+            console.log(`[runNodeScript STDOUT chunk]: ${data.toString()}`);
             outputData += data.toString();
         });
         
         // Collect stderr data
         childProcess.stderr.on('data', (data) => {
+            console.log(`[runNodeScript STDERR chunk]: ${data.toString()}`);
             errorData += data.toString();
         });
         
         // Handle process completion
         childProcess.on('close', (code) => {
+            const combinedOutput = outputData + (errorData ? `\n--- STDERR ---\n${errorData}` : '');
+            console.log(`[runNodeScript] Process closed. Code: ${code}. Total captured output length: ${combinedOutput.length}`);
+
+             // +++ ADD UNIQUE MARKER LOGS around the full output +++
+             console.log(`>>> !!! BENCHMARK RUNNER SCRIPT OUTPUT START !!! >>>`);
+             console.log(combinedOutput); // Log the whole captured output
+             console.log(`<<< !!! BENCHMARK RUNNER SCRIPT OUTPUT END !!! <<<`);
+             // +++ END UNIQUE MARKER LOGS +++
+             
             if (code !== 0) {
-                // Include both stdout and stderr in the rejection for debugging
+                console.log(`[runNodeScript] Rejecting due to non-zero exit code.`);
                 reject(new Error(`Script exited with code ${code}. Stderr: ${errorData}. Stdout: ${outputData}`));
                 return;
             }
             
-            // Combine stdout and stderr in the resolved output for easier debugging
-            const combinedOutput = outputData + (errorData ? `\n--- STDERR ---\n${errorData}` : '');
+            console.log(`[runNodeScript] Resolving successfully.`);
             resolve(combinedOutput);
         });
         
         // Handle process errors (e.g., node not found)
         childProcess.on('error', (err) => {
+            console.log(`[runNodeScript] Process error event: ${err}`);
             reject(err);
         });
     });

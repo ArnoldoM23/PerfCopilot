@@ -20,6 +20,8 @@ if (!fs.existsSync(functionsFilePath)) {
   process.exit(1);
 }
 
+console.log('[BenchmarkRunner] Required functions file successfully:', functionsFilePath);
+
 let loadedModule: Record<string, any>;
 try {
   // Require the dynamically generated file
@@ -43,6 +45,8 @@ if (loadedModule.testData === undefined ||
     process.exit(1);
 }
 
+console.log('[BenchmarkRunner] Validated required exports (testData, implementations).');
+
 const testData = loadedModule.testData;
 const implementations = loadedModule.implementations as Record<string, string>; // Keep type assertion for TS
 
@@ -54,92 +58,128 @@ if (implementationKeys.length === 0) {
   process.exit(1);
 }
 
+console.log('[BenchmarkRunner] Found implementation keys:', implementationKeys.join(', '));
+
+// --- START: Prepare functions and arguments outside the loop ---
+const preparedFunctions = new Map<string, (...args: any[]) => any>();
+let argsForRun: any[] = [];
+
+// Determine arguments once
+try {
+    // Reuse the argument handling logic from the original loop
+    const allTestData = testData; // Use the module-level testData
+    if (typeof allTestData === 'object' && allTestData !== null && !Array.isArray(allTestData) && allTestData.indexMapping && allTestData.resolutionInfo) {
+        argsForRun = [allTestData.indexMapping, allTestData.resolutionInfo];
+    } else if (Array.isArray(allTestData) && allTestData.length > 0) {
+         const firstTestCase = allTestData[0];
+         if(Array.isArray(firstTestCase)) {
+            argsForRun = firstTestCase;
+         } else {
+            argsForRun = [firstTestCase];
+         }
+    } else if (allTestData !== undefined) {
+        argsForRun = [allTestData];
+    }
+    console.log('[BenchmarkRunner] Determined argsForRun:', JSON.stringify(argsForRun));
+} catch (argError) {
+    console.error(`BENCHMARK_ERROR: Failed to determine arguments from testData: ${argError}`);
+    process.exit(1);
+}
+
+
+// Compile functions once
+console.log('[BenchmarkRunner] Pre-compiling functions...');
+for (const implKey of implementationKeys) {
+    try {
+        const context = {
+            // Include necessary globals if functions depend on them, but NOT testData here
+             console: { log: () => {}, warn: () => {}, error: () => {} },
+             Math: Math
+        };
+        vm.createContext(context);
+        // Run the code to define the function in the context
+        vm.runInContext(implementations[implKey], context, { timeout: 1000 });
+        // Get the function reference
+        const funcRef = vm.runInContext(implKey, context);
+        if (typeof funcRef !== 'function') {
+            throw new Error(`Implementation '${implKey}' did not evaluate to a function.`);
+        }
+        preparedFunctions.set(implKey, funcRef);
+        console.log(`[BenchmarkRunner] Successfully compiled: ${implKey}`);
+    } catch(compileError) {
+        console.error(`BENCHMARK_ERROR: Failed to compile function '${implKey}': ${compileError}`);
+        process.exit(1);
+    }
+}
+console.log('[BenchmarkRunner] All functions pre-compiled.');
+// --- END: Prepare functions and arguments outside the loop ---
+
+
+// Remove async IIFE wrapper
+// (async () => {
 // Dynamically build the Benny suite
 try {
+    console.log('[BenchmarkRunner] Setting up Benny suite...');
     const suite = benny.suite(
         'Function Performance Benchmark',
         // Map over implementation keys ('Original', 'Alternative 1', ...)
-        ...implementationKeys.map(implKey => 
-            benny.add(implKey, () => {
-                // For each benchmark case, create a *new* isolated context
-                const context = {
-                    __testData: testData,
-                    // __entryPointName: entryPointName, // Removed from context
-                    // Add necessary globals (e.g., console, Math)
-                    console: {
-                        log: () => {}, warn: () => {}, error: () => {}
-                    },
-                    Math: Math
-                    // DO NOT pass the implementation code string here
-                };
-                vm.createContext(context);
-
-                try {
-                    // Run the full code for THIS implementation inside the context
-                    vm.runInContext(implementations[implKey], context, { timeout: 1000 });
-
-                    // Get the benchmark function by evaluating its name within the context
-                    const entryFn = vm.runInContext(implKey, context);
-                    if (typeof entryFn !== 'function') {
-                        throw new Error(`Benchmark function '${implKey}' not found in context after running code.`);
-                    }
-
-                    // --- FIX 2: Correctly handle testData --- 
-                    // The LLM is asked to provide testData as an array of test cases.
-                    // For benchmarking, we use the arguments from the first test case.
-                    // testData might be [[arg1, arg2], ...] or [arg1, arg2, ...] or just arg for single-arg funcs.
-                    // We need to handle the case where the function takes multiple arguments. The test case itself will be an array.
-                    
-                    // Use the __testData from the context, which is the full array of test cases.
-                    const allTestData = context.__testData; 
-                    if (!Array.isArray(allTestData) || allTestData.length === 0) {
-                        // If no test data or not an array, try calling with no args or handle error
-                        // For now, let's assume functions require data if provided.
-                        throw new Error('Benchmark testData is missing or not an array.');
-                    }
-
-                    // Use the arguments from the *first* test case for the benchmark run.
-                    const argsForRun = allTestData[0];
-
-                    if (Array.isArray(argsForRun)) {
-                        // If the first test case is an array, spread its elements as arguments
-                        entryFn(...argsForRun);
-                    } else {
-                         // If the first test case is not an array, it's a single argument
-                        entryFn(argsForRun);
-                    }
-                    // --- End Fix 2 ---
-                    
-                } catch (execError) {
-                     // Catch errors during runInContext or function execution within the benchmark case
-                     console.error(`BENCHMARK_EXECUTION_ERROR [${implKey}]: ${execError}`);
-                     // Allow benny to potentially proceed, but log the error clearly.
-                     // Alternatively, re-throw to stop the suite: throw execError;
+        ...implementationKeys.map(implKey =>
+             // Return the benny.add() call from the map function
+             benny.add(implKey, () => {
+                // --- START: Modified benny.add callback ---
+                const funcToRun = preparedFunctions.get(implKey);
+                // We assume funcToRun exists because we checked during pre-compilation
+                if (typeof funcToRun !== 'function') {
+                    // This should ideally not happen due to pre-compilation checks
+                    console.error(`BENCHMARK_ITERATION_ERROR: Pre-compiled function not found for key: ${implKey}`);
+                    // Optionally throw an error to halt the benchmark for this case
+                    throw new Error(`Pre-compiled function not found for key: ${implKey}`);
                 }
-            })
-        ),
-        benny.cycle(),
+                try {
+                    // Call the pre-compiled function with pre-determined args
+                    funcToRun(...argsForRun);
+                } catch (execError) {
+                     // Log execution errors specifically happening *during* the timed run
+                     // Avoid excessively noisy logs here unless debugging Benny itself
+                     // console.error(`BENCHMARK_ITERATION_ERROR [${implKey}]: ${execError}`);
+                     // Re-throw or handle if necessary, but Benny might catch it
+                     throw execError; 
+                }
+                // --- END: Modified benny.add callback ---
+            }) // End of benny.add() call
+        ), // End of .map()
+
+        // Benny lifecycle handlers are arguments to benny.suite, after the mapped cases
+        benny.cycle((cycleInfo: any) => {
+             console.log(`[BenchmarkRunner CYCLE] Name: ${cycleInfo?.name}, Ops: ${cycleInfo?.ops}`);
+        }),
         benny.complete((summary: any) => {
+            console.log('[BenchmarkRunner COMPLETE] Benchmark finished. Processing summary...');
+            console.log('[BenchmarkRunner COMPLETE] Raw summary:', JSON.stringify(summary));
             const formattedResults = summary.results.map((res: any) => ({ 
                 name: res.name, 
-                ops: res.ops, // Use ops/sec from benny
-                // margin: res.margin // Benny v3 might not have margin directly here, calculate if needed
+                ops: res.ops 
             }));
-            // Determine fastest based on ops from formatted results
             let fastestSuiteName = 'Unknown';
             if (formattedResults.length > 0) {
-                // Define type for clarity
                 type ResultItem = { name: string; ops: number }; 
                 const fastestResult = formattedResults.reduce((max: ResultItem, current: ResultItem) => (current.ops > max.ops ? current : max), formattedResults[0]);
                 fastestSuiteName = fastestResult.name;
             }
-            
-            // Output results in the expected JSON format
+            console.log('[BenchmarkRunner COMPLETE] Processed results:', JSON.stringify({ results: formattedResults, fastest: fastestSuiteName }));
             console.log('RESULTS_JSON: ' + JSON.stringify({ results: formattedResults, fastest: fastestSuiteName }));
         })
-    );
-    // suite.run(); // Benny runs automatically when the script finishes if not explicitly run?
+    ); // End of benny.suite() call
+
+    console.log('[BenchmarkRunner] Benny suite setup complete.');
+    // Remove explicit run call
+    // console.log('[BenchmarkRunner] Explicitly calling suite.run()...');
+    // await suite.run(); 
+    // console.log('[BenchmarkRunner] suite.run() finished.');
+
 } catch (error) {
     console.error(`BENCHMARK_ERROR: Error setting up or running Benny suite: ${error}`);
     process.exit(1);
 } 
+// Remove async IIFE wrapper
+// })(); 
