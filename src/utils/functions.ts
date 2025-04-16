@@ -1,4 +1,15 @@
 /**
+ * @fileoverview Utility Functions for PerfCopilot
+ * 
+ * This file provides a collection of helper functions used across the PerfCopilot extension.
+ * These include:
+ * - Basic JavaScript function validation.
+ * - Temporary file creation.
+ * - Execution of Node.js scripts as child processes.
+ * - Extraction of function names from code strings.
+ */
+
+/**
  * Utility Functions for PerfCopilot
  * 
  * This file contains various utility functions used throughout the extension.
@@ -79,6 +90,7 @@ export async function createTempFile(content: string, filename: string): Promise
 export function runNodeScript(scriptPath: string, args: string[] = []): Promise<string> {
     return new Promise((resolve, reject) => {
         console.log(`[runNodeScript] Spawning: node ${scriptPath} ${args.join(' ')}`);
+        // CRITICAL: Spawns the benchmark runner script as a separate Node.js process
         const childProcess = spawn('node', [scriptPath, ...args]);
         
         let outputData = '';
@@ -97,6 +109,7 @@ export function runNodeScript(scriptPath: string, args: string[] = []): Promise<
         });
         
         // Handle process completion
+        // CRITICAL: Collects stdout/stderr and resolves/rejects based on exit code
         childProcess.on('close', (code) => {
             const combinedOutput = outputData + (errorData ? `\n--- STDERR ---\n${errorData}` : '');
             console.log(`[runNodeScript] Process closed. Code: ${code}. Total captured output length: ${combinedOutput.length}`);
@@ -132,6 +145,8 @@ export function runNodeScript(scriptPath: string, args: string[] = []): Promise<
  * @returns The function name or undefined if not found
  */
 export function extractFunctionName(functionCode: string): string | undefined {
+    // CRITICAL: Regex-based extraction of function name for user display/identification
+    // Note: Relies on common function definition patterns.
     // Try to match function declarations: function name(...) {...}
     const funcDeclarationMatch = functionCode.match(/function\s+([a-zA-Z_$][\w$]*)\s*\(/);
     if (funcDeclarationMatch) {

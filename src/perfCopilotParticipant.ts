@@ -1,4 +1,30 @@
 /**
+ * @fileoverview PerfCopilot Chat Participant Implementation
+ * 
+ * This file defines the `PerfCopilotParticipant` class, which acts as the main entry point 
+ * for handling user interactions through the VS Code Chat interface (@perfcopilot).
+ * 
+ * Responsibilities:
+ * - Registers the chat participant with VS Code.
+ * - Receives user prompts containing JavaScript/TypeScript code to analyze.
+ * - Extracts and validates the function code from the prompt.
+ * - Interacts with the Language Model (LLM) via `vscode.lm` API to:
+ *   - Generate alternative function implementations focused on performance.
+ *   - Generate suitable test data for benchmarking the identified entry point.
+ *   - Analyze benchmark results and provide explanations.
+ * - Coordinates with the `CorrectnessVerifier` to check the functional equivalence of 
+ *   generated alternatives against the original function using LLM-generated test inputs.
+ * - Coordinates with the `BenchmarkService` to:
+ *   - Prepare implementations (renaming for isolated execution context).
+ *   - Generate the benchmark module code (containing implementations and test data).
+ *   - Execute the benchmark runner script (`benchmarkRunner.js`) as a child process.
+ *   - Parse the results from the runner script.
+ * - Streams progress updates and final results back to the user in the chat view.
+ * - Handles errors gracefully throughout the process, reporting issues to the user and logs.
+ * - Implements retry logic for LLM requests to improve reliability.
+ */
+
+/**
  * PerfCopilot Chat Participant
  * 
  * This file implements a VS Code Chat participant that handles performance optimization requests
@@ -208,6 +234,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     // FIX: Use retry helper
                     const alternativesRequest = await this.sendRequestWithRetry(languageModel, alternativesMessages, {}, token);
                     
+                    // CRITICAL: Correctly accumulates stream chunks for alternatives
                     for await (const chunk of alternativesRequest.stream) { 
                         if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
@@ -269,6 +296,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     const benchmarkRequest = await this.sendRequestWithRetry(languageModel, benchmarkMessages, {}, token);
                     
                     // FIX: Use the same stream handling as for alternatives
+                    // CRITICAL: Correctly accumulates stream chunks for benchmark config
                     let benchmarkResponseText = '';
                     for await (const chunk of benchmarkRequest.stream) { 
                         if (token.isCancellationRequested) {
@@ -320,6 +348,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     // --- NEW: Correctness Check (Run AFTER getting entryPointName) ---
                     response.progress('Verifying functional correctness...');
                     try {
+                        // CRITICAL: Uses CorrectnessVerifier with LLM-identified entry point name
                         // Use the entryPointName identified by the LLM for verification
                         const checkResults = await verifyFunctionalEquivalence(
                             originalFunction, 
@@ -366,6 +395,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     const processedImplementations: Record<string, string> = {};
                     const originalEntryPoint = benchmarkConfig.entryPointName;
                     
+                    // CRITICAL: Uses ONLY verified alternatives for benchmarking
                     // Use ONLY verified alternatives from now on
                     const implementationsToProcess = {
                         [originalFunction.name]: originalFunction.code,
@@ -377,6 +407,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                         const sanitizedKey = rawKey.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
                         this.outputChannel.appendLine(`Processing implementation: ${rawKey} -> ${sanitizedKey}`);
                         
+                        // CRITICAL: Renames functions and replaces recursive calls for isolated execution
                         // Replace original function name and recursive calls with the sanitized key
                         const processedCode = this.benchmarkService.replaceRecursiveCalls(
                             code,
@@ -392,6 +423,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     this.outputChannel.appendLine(`[DEBUG] Final testData for benchmark module: ${JSON.stringify(benchmarkConfig.testData)}`);
                     this.outputChannel.appendLine(`[DEBUG] Final implementations for benchmark module keys: ${Object.keys(processedImplementations).join(', ')}`);
 
+                    // CRITICAL: Constructs the JS module string for the benchmark runner script
                     // Construct the actual code module to be run by benchmarkRunner.js
                     benchmarkCode = `
 // Benchmark configuration generated by PerfCopilot
@@ -428,6 +460,7 @@ module.exports = {
                 }
                 let benchmarkResults: any;
                 try {
+                    // CRITICAL: Executes the benchmark via BenchmarkService
                     benchmarkResults = await this.benchmarkService.runBenchmark(benchmarkCode);
                     this.outputChannel.appendLine(`Benchmark results received: ${JSON.stringify(benchmarkResults)}`);
                     if (!benchmarkResults || !benchmarkResults.results || benchmarkResults.results.length === 0) {
@@ -454,6 +487,7 @@ module.exports = {
                     // FIX: Use retry helper
                     const explanationRequest = await this.sendRequestWithRetry(languageModel, explanationMessages, {}, token);
                     
+                    // CRITICAL: Streams final explanation from LLM
                     for await (const chunk of explanationRequest.stream) { // Use stream property
                          if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
@@ -591,9 +625,11 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
 
         try {
             // Regex to find JSON code block
+            // CRITICAL: Regex for JSON block is correct for an array no not modify.
             const jsonBlockRegex = /```(?:json)?\s*([\[][\s\S]*[\]])\s*```/;
             const match = responseText.match(jsonBlockRegex);
 
+            // CRITICAL: Parses alternative implementations from LLM response (JSON focus)
             let jsonString: string | undefined;
 
             if (match && match[1]) {
