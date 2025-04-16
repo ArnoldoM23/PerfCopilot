@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as vm from 'vm'; // Keep vm import for now
 import * as benny from 'benny'; // Keep benny import for now
 import { spawn } from 'child_process'; // Restore spawn
+import { determineArguments } from '../utils/benchmarkRunner';
 
 // Resolve the path to the benchmark runner script relative to the project root
 // CRITICAL: Determine project root for correct module resolution in spawned process
@@ -235,4 +236,91 @@ describe('Benchmark Runner Script Integration Tests', () => {
 
     // TODO: Add tests for failure cases (missing file, invalid module, compile error, etc.)
 
+});
+
+describe('determineArguments', () => {
+    // Test case 1: Default behavior - single array argument
+    test('should return array containing the input array when testData is an array', () => {
+        const testData = [1, 2, 3];
+        const expectedArgs = [testData]; // Expect [[1, 2, 3]]
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    // Test case 2: Default behavior - single object argument
+    test('should return array containing the input object when testData is a simple object', () => {
+        const testData = { a: 1, b: 'test' };
+        const expectedArgs = [testData]; // Expect [{ a: 1, b: 'test' }]
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    // Test case 3: Default behavior - single primitive argument
+    test('should return array containing the input primitive when testData is a number', () => {
+        const testData = 123;
+        const expectedArgs = [testData]; // Expect [123]
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    test('should return array containing the input primitive when testData is a string', () => {
+        const testData = 'hello';
+        const expectedArgs = [testData]; // Expect ['hello']
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    // Test case 4: Default behavior - null/undefined
+    test('should return array containing null when testData is null', () => {
+        const testData = null;
+        const expectedArgs = [null];
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    test('should return array containing undefined when testData is undefined', () => {
+        const testData = undefined;
+        const expectedArgs = [undefined];
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    // Test case 5: Specific structure for findAll...
+    test('should return array with indexMapping and resolutionInfo when structure matches', () => {
+        const testData = {
+            indexMapping: { key1: 'val1' },
+            resolutionInfo: { key2: 'val2' },
+            otherProp: 'ignore'
+        };
+        const expectedArgs = [testData.indexMapping, testData.resolutionInfo];
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    // Test case 6: Structure *almost* matches specific case, but misses a key
+    test('should fallback to default when structure almost matches specific case but lacks indexMapping', () => {
+        const testData = {
+            // indexMapping: { key1: 'val1' },
+            resolutionInfo: { key2: 'val2' }
+        };
+        const expectedArgs = [testData]; // Fallback to default
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    test('should fallback to default when structure almost matches specific case but lacks resolutionInfo', () => {
+        const testData = {
+            indexMapping: { key1: 'val1' }
+            // resolutionInfo: { key2: 'val2' }
+        };
+        const expectedArgs = [testData]; // Fallback to default
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+     // Test case 7: Specific structure but one value is null (should still match)
+    test('should handle specific structure even if properties are null/undefined', () => {
+        const testData = {
+            indexMapping: null,
+            resolutionInfo: undefined
+        };
+        const expectedArgs = [null, undefined];
+        expect(determineArguments(testData)).toEqual(expectedArgs);
+    });
+
+    // Note: We are not testing the error throwing case directly here,
+    // as the try/catch inside determineArguments handles internal errors
+    // and wraps them before re-throwing. Testing the internal error condition
+    // is complex. The main function's catch block handles the re-thrown error.
 }); 

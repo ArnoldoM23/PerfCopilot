@@ -66,6 +66,99 @@ const vm = require('vm');
 // including setup overhead (parsing, vm context creation) in the timed execution.
 // !!! CRITICAL SECTION END: BENCHMARK ACCURACY SETUP !!!
 
+// +++ START REFACTOR HELPER FUNCTION +++
+/**
+ * Determines the arguments array to be passed to the benchmarked functions
+ * based on the structure of the provided testData.
+ * Handles known specific structures and provides a default.
+ * CRITICAL: This avoids repeated, expensive argument determination inside
+ *           Benny's timed measurement loop.
+ * @param testData - The test data loaded from the benchmark file.
+ * @returns An array of arguments to be used for function calls.
+ * @throws Error if argument determination fails unexpectedly.
+ */
+// Export the function for testing
+export function determineArguments(testData: any): any[] {
+    try {
+        // Check for the specific known structure of findAllMatchingExpoResolutionPathsOld testData
+        if (typeof testData === 'object' && 
+            testData !== null && 
+            !Array.isArray(testData) && 
+            testData.hasOwnProperty('indexMapping') && 
+            testData.hasOwnProperty('resolutionInfo')) 
+        {
+            // Specific case for findAll... which takes 2 object arguments
+            console.log('[BenchmarkRunner ArgHelper] Detected specific structure for findAll...');
+            return [testData.indexMapping, testData.resolutionInfo];
+        } else {
+            // Default case: Assume testData represents a SINGLE argument for the benchmark function.
+            // This works for processNumbers where testData is the array argument itself.
+            // This would also work if testData was a single object or primitive.
+            // This might fail if testData is an array meant to be spread as multiple arguments (e.g., testData = [5, 10] for add(a,b)) -
+            // requires LLM to provide testData appropriately based on function signature.
+            console.log('[BenchmarkRunner ArgHelper] Using default: testData as single argument.');
+            return [testData];
+        }
+    } catch (argError) {
+        // Log the error with context
+        console.error(`[BenchmarkRunner ArgHelper DEBUG] Caught error during argument determination: ${argError}`);
+        // Re-throw or handle as needed - here we let the main function catch it
+        throw new Error(`Failed to determine arguments from testData: ${argError}`);
+    }
+}
+// +++ END REFACTOR HELPER FUNCTION +++
+
+// +++ START REFACTOR HELPER FUNCTION: Compile Implementations +++
+/**
+ * Compiles function implementation strings using Node.js vm module.
+ * Creates an isolated context for each function and retrieves a reference.
+ * CRITICAL: Pre-compiles functions ONCE to avoid overhead in Benny's timing loop.
+ * @param implementations - Object mapping implementation names to code strings.
+ * @param implementationKeys - Array of keys (names) from the implementations object.
+ * @returns A Map where keys are implementation names and values are the compiled function references.
+ * @throws Error if compilation fails for any implementation.
+ */
+export function compileImplementations(
+    implementations: Record<string, string>,
+    implementationKeys: string[]
+): Map<string, (...args: any[]) => any> {
+    const preparedFunctions = new Map<string, (...args: any[]) => any>();
+    console.log('[BenchmarkRunner CompilerHelper] Pre-compiling functions...');
+
+    for (const implKey of implementationKeys) {
+        try {
+            const context = {
+                 // Basic safe globals
+                 console: { log: () => {}, warn: () => {}, error: () => {} }, // Prevent benchmarked code logging
+                 Math: Math,
+                 // Add other safe globals if needed, but avoid anything complex/stateful
+            };
+            vm.createContext(context);
+
+            // Run the code string to define the function within the context
+            vm.runInContext(implementations[implKey], context, { timeout: 1000 }); // Added timeout
+
+            // Retrieve the actual function reference from the context using its key (name)
+            const funcRef = vm.runInContext(implKey, context);
+
+            if (typeof funcRef !== 'function') {
+                throw new Error(`Implementation '${implKey}' did not evaluate to a function.`);
+            }
+            preparedFunctions.set(implKey, funcRef);
+            console.log(`[BenchmarkRunner CompilerHelper] Successfully compiled: ${implKey}`);
+        } catch (compileError: any) {
+            // Add more context to the error message
+            const errMsg = `BENCHMARK_ERROR: Failed to compile function '${implKey}': ${compileError.message || compileError}`;
+            console.error(errMsg);
+             // Rethrow a new error to be caught by the main runBenchmarks function
+            throw new Error(errMsg); 
+        }
+    }
+    console.log('[BenchmarkRunner CompilerHelper] All functions pre-compiled.');
+    return preparedFunctions;
+}
+// +++ END REFACTOR HELPER FUNCTION +++
+
 // Wrap the main logic in an async function to allow awaiting Benny's completion
 async function runBenchmarks(functionsFilePath: string) {
     // +++ DEBUG LOG +++
@@ -130,26 +223,13 @@ async function runBenchmarks(functionsFilePath: string) {
     // REASON: Avoids repeated, expensive argument parsing/determination inside 
     //         Benny's timed measurement loop, ensuring only function execution is measured.
     // DO NOT MODIFY without understanding the impact on benchmark accuracy.
-    const preparedFunctions = new Map<string, (...args: any[]) => any>();
     let argsForRun: any[] = [];
 
     // Determine arguments once - CRITICAL: Avoids re-calculating in the timed loop.
     try {
-        const allTestData = testData; // Use the module-level testData
-
-        // Check for the specific known structure of findAllMatchingExpoResolutionPathsOld testData
-        if (typeof allTestData === 'object' && allTestData !== null && !Array.isArray(allTestData) && allTestData.indexMapping && allTestData.resolutionInfo) {
-            // Specific case for findAll... which takes 2 object arguments
-            argsForRun = [allTestData.indexMapping, allTestData.resolutionInfo];
-        } else {
-            // Default case: Assume testData represents a SINGLE argument for the benchmark function.
-            // This works for processNumbers where testData is the array argument itself.
-            // This would also work if testData was a single object or primitive.
-            // This might fail if testData is an array meant to be spread as multiple arguments (e.g., testData = [5, 10] for add(a,b)) -
-            // requires LLM to provide testData appropriately based on function signature.
-            argsForRun = [allTestData];
-        }
-
+        // +++ REFACTOR: Use the helper function +++
+        argsForRun = determineArguments(testData);
+        // +++ END REFACTOR +++
         console.log('[BenchmarkRunner] Determined argsForRun:', JSON.stringify(argsForRun));
     } catch (argError) {
         // +++ DEBUG LOG +++
@@ -158,6 +238,16 @@ async function runBenchmarks(functionsFilePath: string) {
         process.exit(1);
     }
 
+    // +++ REFACTOR: Use the helper function to compile implementations +++
+    // Ensure preparedFunctions is declared here to receive the result
+    let preparedFunctions: Map<string, (...args: any[]) => any>; 
+    try {
+        preparedFunctions = compileImplementations(implementations, implementationKeys);
+    } catch (compileError) {
+         // Error already logged by helper, just exit
+         process.exit(1);
+    }
+    // +++ END REFACTOR +++
 
     // !!! CRITICAL LOGIC: Function Pre-compilation !!!
     // Compiles each function implementation string using `vm` ONCE and stores
@@ -273,20 +363,28 @@ async function runBenchmarks(functionsFilePath: string) {
 }
 
 // Main execution
-const filePath = process.argv[2];
-if (!filePath) {
-    console.error('[BenchmarkRunner ERROR] Benchmark file path not provided.');
-    process.exit(1);
-}
-
-(async () => {
-    try {
-        await runBenchmarks(filePath);
-        // If runBenchmarks completes without error, exit normally
-        // process.exit(0); // Optional: Explicitly exit with 0, though Node.js does this by default if no async ops are pending
-    } catch (error) {
-        console.error(`[BenchmarkRunner FATAL] Unhandled error in benchmark runner: ${error instanceof Error ? error.message : String(error)}`);
-        console.error(error instanceof Error ? error.stack : '');
-        process.exit(1); // Exit with error code
+// Only run main logic if executed directly
+if (require.main === module) {
+    const filePath = process.argv[2];
+    if (!filePath) {
+        console.error('[BenchmarkRunner ERROR] Benchmark file path argument is required.');
+        process.exit(1);
     }
-})();
+
+    (async () => {
+        try {
+            await runBenchmarks(filePath);
+            // Exit normally if benchmark completes
+            // process.exit(0); // Generally not needed unless coordinating multiple processes
+        } catch (error) {
+            // Error should have been logged within runBenchmarks or helpers
+            // We exit here to signal failure to the parent process
+             console.error(`[BenchmarkRunner FATAL] Top-level execution error: ${error instanceof Error ? error.message : String(error)}`);
+            process.exit(1); // Ensure exit code indicates failure
+        }
+    })();
+} else {
+     // This block runs if the file is imported/required
+     console.log('[BenchmarkRunner] Module imported, not executing main block.');
+     // Exports (like determineArguments, compileImplementations) are available
+}
