@@ -41,7 +41,15 @@ jest.mock('../utils/functions', () => ({
         cleanup: jest.fn().mockResolvedValue(undefined) // Default cleanup succeeds
     }),
     runNodeScript: jest.fn().mockImplementation((scriptPath, args) => {
-        return Promise.resolve('RESULTS_JSON: { "fastest": "original", "results": [] }');
+        // UPDATE: Return output in the new format
+        const output = `
+            [BenchmarkRunner DEBUG] Starting...
+            cycle: Name: original, Ops: 1234567.89
+            cycle: Name: alternative, Ops: 2345678.12
+            [BenchmarkRunner COMPLETE] Raw summary: ...
+            complete: Fastest is alternative
+        `;
+        return Promise.resolve(output);
     }),
     isValidJavaScriptFunction: jest.fn().mockReturnValue(true),
     extractFunctionName: jest.fn().mockReturnValue('testFunction'),
@@ -114,23 +122,6 @@ describe('BenchmarkService', () => {
       expect(utils.runNodeScript).toHaveBeenCalledTimes(1);
     });
     
-    it('should handle JSON formatted results', async () => {
-      // Setup the runNodeScript mock to return JSON result
-      const jsonOutput = `RESULTS_JSON: { "fastest": "alternative", "results": [{"name": "alternative", "ops": 2345678 }, {"name": "original", "ops": 1234567 }] }`;
-      (utils.runNodeScript as jest.Mock).mockResolvedValue(jsonOutput);
-      
-      // Run the benchmark
-      const result = await benchmarkService.runBenchmark(benchmarkCode);
-      
-      // Verify the result structure directly
-      expect(result.fastest).toBe('alternative');
-      expect(result.results).toHaveLength(2);
-      expect(result.results).toEqual(expect.arrayContaining([
-          expect.objectContaining({ name: 'original', ops: 1234567 }),
-          expect.objectContaining({ name: 'alternative', ops: 2345678 }),
-      ]));
-    });
-    
     it('should handle errors during benchmark execution', async () => {
       // Setup the runNodeScript mock to throw an error
       (utils.runNodeScript as jest.Mock).mockRejectedValue(new Error('Execution failed'));
@@ -173,41 +164,43 @@ describe('BenchmarkService', () => {
     });
 
     it('should parse standard benny output correctly', () => {
+        // UPDATE: Use the current cycle:/complete: format
         const output = `
-          Suite Name
-            case 1 x 1,234,567 ops/sec ±1.23% (90 runs sampled)
-            case 2 x 2,345,678 ops/sec ±0.98% (95 runs sampled)
-            case_3 x 999,999 ops/sec ±2.00% (88 runs sampled)
-          Fastest is case 2 // This line is ignored by the parser
+          [BenchmarkRunner DEBUG] Some logs...
+          cycle: Name: case 1, Ops: 1234567.89
+          cycle: Name: case 2, Ops: 2345678.12
+          [BenchmarkRunner COMPLETE] Raw summary: ...
+          cycle: Name: case_3, Ops: 999999.0
+          complete: Fastest is case 2
         `;
         const result = realParseTextBenchmarkOutput(output);
-        expect(result.fastest).toBe('case 2'); // Based on highest ops
+        expect(result.fastest).toBe('case 2'); // Should be parsed from 'complete:' line
         expect(result.results).toHaveLength(3);
         expect(result.results).toEqual(expect.arrayContaining([
-          expect.objectContaining({ name: 'case 1', ops: 1234567, margin: 0 }),
-          expect.objectContaining({ name: 'case 2', ops: 2345678, margin: 0 }),
-          expect.objectContaining({ name: 'case_3', ops: 999999, margin: 0 }),
+          expect.objectContaining({ name: 'case 1', ops: 1234567.89, margin: 0 }),
+          expect.objectContaining({ name: 'case 2', ops: 2345678.12, margin: 0 }),
+          expect.objectContaining({ name: 'case_3', ops: 999999.0, margin: 0 }),
         ]));
     });
 
      it('should handle output with only one result', () => {
+        // UPDATE: Use the current cycle:/complete: format
         const output = `
-          Single Case Suite
-            only_case x 500,000 ops/sec ±1.50% (92 runs sampled)
-          Fastest is only_case // This line is ignored
+          cycle: Name: only_case, Ops: 500000
+          complete: Fastest is only_case
         `;
         const result = realParseTextBenchmarkOutput(output);
-        expect(result.fastest).toBe('only_case'); // Only one result
+        expect(result.fastest).toBe('only_case');
         expect(result.results).toHaveLength(1);
         expect(result.results[0]).toEqual(expect.objectContaining({ name: 'only_case', ops: 500000, margin: 0 }));
     });
 
-    it('should handle output missing the "Fastest is" line', () => {
+    it('should handle output missing the "complete:" line but having cycles', () => {
+       // UPDATE: Use the current cycle: format, missing complete:
        const output = `
-         Suite Name
-           case 1 x 1,000,000 ops/sec ±1.00% (90 runs sampled)
-           case 2 x 500,000 ops/sec ±2.00% (90 runs sampled)
-         No fastest line here
+         cycle: Name: case 1, Ops: 1000000
+         cycle: Name: case 2, Ops: 500000
+         Some other log line
        `;
        const result = realParseTextBenchmarkOutput(output);
        // It should still parse results, and fastest is determined by ops
@@ -220,6 +213,7 @@ describe('BenchmarkService', () => {
     });
 
      it('should return empty results for non-matching output', () => {
+        // UPDATE: No cycle: or complete: lines
         const output = `
           Some random text log
           No benchmark results here
@@ -229,16 +223,17 @@ describe('BenchmarkService', () => {
         expect(result.fastest).toBe('Unknown');
     });
 
-    it('should handle lines that do not match the expected format', () => {
+    it('should handle lines that do not match the expected cycle format', () => {
+        // UPDATE: Use the current cycle:/complete: format with interspersed bad lines
         const output = `
-          Mixed Suite
-            valid_case x 1,500,000 ops/sec ±1.11% (91 runs sampled)
-            malformed line - ignore this
-            another_valid x 2,500,000 ops/sec ±0.88% (96 runs sampled)
-            Fastest is another_valid // This line is ignored
+          cycle: Name: valid_case, Ops: 1500000
+          Some info log
+          cycle: Name: another_valid, Ops: 2500000
+          WARNING: Something happened
+          complete: Fastest is another_valid
         `;
         const result = realParseTextBenchmarkOutput(output);
-        expect(result.fastest).toBe('another_valid'); // Based on highest ops
+        expect(result.fastest).toBe('another_valid');
         expect(result.results).toHaveLength(2);
         expect(result.results).toEqual(expect.arrayContaining([
           expect.objectContaining({ name: 'valid_case', ops: 1500000, margin: 0 }),
@@ -248,118 +243,76 @@ describe('BenchmarkService', () => {
   });
 
   describe('parseBenchmarkResults', () => {
-     let realParseBenchmarkResults: (output: string) => any;
-     let mockParseTextBenchmarkOutput: jest.SpyInstance;
-     let mockLog: string[]; // To capture logs
+    // Use the actual implementation for these tests
+    let realParseBenchmarkResults: (output: string) => any;
+    let mockParseTextBenchmarkOutput: jest.SpyInstance;
 
-     beforeEach(() => {
-        mockLog = []; // Reset log capture
-        // Override the outputChannel specifically for these tests
-        (benchmarkService as any).outputChannel = {
-            appendLine: jest.fn((line: string) => mockLog.push(line)),
-            show: jest.fn(),
-            clear: jest.fn(),
-            dispose: jest.fn(),
-        };
+    beforeEach(() => {
+      realParseBenchmarkResults = (benchmarkService as any).parseBenchmarkResults.bind(benchmarkService);
+      // Spy on the text parser to verify it's called
+      mockParseTextBenchmarkOutput = jest.spyOn(benchmarkService as any, 'parseTextBenchmarkOutput');
+    });
 
-        realParseBenchmarkResults = (benchmarkService as any).parseBenchmarkResults.bind(benchmarkService);
-        mockParseTextBenchmarkOutput = jest.spyOn(benchmarkService as any, 'parseTextBenchmarkOutput').mockReturnValue({
-             fastest: 'text_fallback',
-             results: [{ name: 'text_fallback', ops: 1000 }]
-         });
-         // Restore the real implementation for parseBenchmarkResults itself
-         jest.spyOn(benchmarkService as any, 'parseBenchmarkResults').mockImplementation(((output: string) => realParseBenchmarkResults(output)) as any);
-     });
-
-    it('should prefer valid JSON results when available', () => {
-      const output = `
-        Some initial output...
-        RESULTS_JSON: { "fastest": "jsonFastest", "results": [{"name": "jsonFastest", "ops": 5000}] }
-        Some trailing output...
+    it('should parse valid text output using parseTextBenchmarkOutput', () => {
+      const textOutput = `
+        cycle: Name: test1, Ops: 100
+        cycle: Name: test2, Ops: 200
+        complete: Fastest is test2
       `;
-      const result = realParseBenchmarkResults(output);
-      expect(result.fastest).toBe('jsonFastest');
-      expect(result.results).toHaveLength(1);
-      expect(result.results[0]).toEqual({ name: 'jsonFastest', ops: 5000 });
-      expect(mockParseTextBenchmarkOutput).not.toHaveBeenCalled();
-      // Verify log message for successful JSON parse
-      expect(mockLog).toEqual(expect.arrayContaining([
-        'Found RESULTS_JSON line. Preparing to parse...',
-        expect.stringContaining('--- String to Parse as JSON ---'),
-        'Successfully parsed benchmark JSON.'
-      ]));
+      const expectedResult = { fastest: 'test2', results: [{ name: 'test1', ops: 100, margin: 0 }, { name: 'test2', ops: 200, margin: 0 }] };
+      mockParseTextBenchmarkOutput.mockReturnValue(expectedResult);
+
+      const result = realParseBenchmarkResults(textOutput);
+      
+      expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(textOutput);
+      expect(result).toEqual(expectedResult);
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith('Attempting to parse benchmark results using text format (cycle:/complete:)...');
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith('Successfully parsed benchmark results from text output.');
     });
 
-    it('should fall back to text parsing when JSON marker exists but JSON is invalid', () => {
-      const output = `
-        Some text...
-        RESULTS_JSON: { invalid json ]
-        More text...
-         benchmark_case x 1,000 ops/sec ±1.00% (90 runs sampled)
-         Fastest is benchmark_case
+    it('should throw an error if BENCHMARK_ERROR is present', () => {
+      const errorOutput = `
+        Some initial logs
+        BENCHMARK_ERROR: Failed to compile function 'Alternative_1'
+        Some later logs
       `;
-       const result = realParseBenchmarkResults(output);
-       // Should have logged an error about invalid JSON
-       // Use mockLog to check for the specific log message
-       expect(mockLog).toEqual(expect.arrayContaining([
-         'Found RESULTS_JSON line. Preparing to parse...',
-         expect.stringContaining('--- String to Parse as JSON ---'),
-         expect.stringContaining('Error parsing benchmark results JSON:'),
-         expect.stringContaining('--- Failed JSON String ---'),
-         'Attempting to parse benchmark results using text format...',
-         'Successfully parsed benchmark results from text output.' // Since the mock returns results
-       ]));
-       // Should have fallen back to the text parser mock
-       expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(output);
-       expect(result.fastest).toBe('text_fallback');
-       expect(result.results).toEqual([{ name: 'text_fallback', ops: 1000 }]);
+      mockParseTextBenchmarkOutput.mockReturnValue({ fastest: 'Unknown', results: [] }); // Mock return, though it shouldn't be reached
+
+      expect(() => realParseBenchmarkResults(errorOutput)).toThrow("Benchmark script reported error: Failed to compile function 'Alternative_1'");
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining("Found BENCHMARK_ERROR line: Failed to compile function 'Alternative_1'"));
+      // Text parsing shouldn't even be attempted if BENCHMARK_ERROR is found
+      expect(mockParseTextBenchmarkOutput).not.toHaveBeenCalled(); 
     });
 
-    it('should use text parsing when JSON marker is not present', () => {
-        const output = `
-         Regular benny output
-           case_a x 1,000 ops/sec ±1.00% (90 runs sampled)
-           case_b x 2,000 ops/sec ±0.50% (95 runs sampled)
-         Fastest is case_b
-        `;
-        const result = realParseBenchmarkResults(output);
-        // Should have logged fallback and text parsing attempt
-        expect(mockLog).toEqual(expect.arrayContaining([
-            'RESULTS_JSON line not found. Falling back to text parsing.',
-            'Attempting to parse benchmark results using text format...',
-            'Successfully parsed benchmark results from text output.'
-        ]));
-        // Should have used the text parser mock
-        expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(output);
-        expect(result.fastest).toBe('text_fallback'); // As per the mock
-        expect(result.results).toEqual([{ name: 'text_fallback', ops: 1000 }]);
+    it('should return default empty results if text parsing fails or returns empty', () => {
+      const nonBenchmarkOutput = `Just some random logs, no cycle or complete lines.`;
+      const emptyParsedResult = { fastest: 'Unknown', results: [] };
+      mockParseTextBenchmarkOutput.mockReturnValue(emptyParsedResult);
+
+      const result = realParseBenchmarkResults(nonBenchmarkOutput);
+
+      expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(nonBenchmarkOutput);
+      expect(result).toEqual(emptyParsedResult);
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith('Attempting to parse benchmark results using text format (cycle:/complete:)...');
+      // Specific warning message when text parsing yields no results
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining('Warning: Text parsing did not yield valid results.'));
     });
+    
+    it('should return default empty results if text parsing throws an error', () => {
+      const malformedOutput = `cycle: Name: broken`; // Invalid format
+      const parseError = new Error('Failed to parse text');
+      mockParseTextBenchmarkOutput.mockImplementation(() => { throw parseError; });
 
-    it('should handle invalid JSON after the marker and fallback to text parsing', () => {
-        const invalidJsonOutput = 'RESULTS_JSON: { "fastest": "original", "results": [ ] // Missing closing brace';
-        const textParseResult = { fastest: 'fallback', results: [{ name: 'fallback', ops: 1 }] };
-        mockParseTextBenchmarkOutput.mockReturnValue(textParseResult);
+      const result = realParseBenchmarkResults(malformedOutput);
 
-        const result = realParseBenchmarkResults(invalidJsonOutput);
-
-        expect(mockLog).toContainEqual(expect.stringContaining('Error parsing benchmark results JSON:'));
-        expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(invalidJsonOutput);
-        expect(result).toEqual(textParseResult);
+      expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(malformedOutput);
+      expect(result).toEqual({ fastest: 'Unknown', results: [] });
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(expect.stringContaining(`Error during text parsing: ${parseError}`));
+      expect(mockOutputChannel.appendLine).toHaveBeenCalledWith('Warning: All parsing attempts failed. Returning empty results.');
     });
+  });
 
-    it('should use text parsing when JSON marker is missing', () => {
-        const textOutput = `  Suite Name\n    case 1 x 1,234,567 ops/sec ±1.23% (90 runs sampled)`;
-        const textParseResult = { fastest: 'case 1', results: [{ name: 'case 1', ops: 1234567 }] };
-        mockParseTextBenchmarkOutput.mockReturnValue(textParseResult);
-
-        const result = realParseBenchmarkResults(textOutput);
-
-        // Check that no JSON parsing error was logged
-        expect(mockLog).not.toContainEqual(expect.stringContaining('Failed to parse JSON results:'));
-        // Check that the text parser was called
-        expect(mockParseTextBenchmarkOutput).toHaveBeenCalledWith(textOutput);
-        // Check that the result from the text parser is returned
-        expect(result).toEqual(textParseResult);
-    });
+  describe('replaceRecursiveCalls', () => {
+    // ... existing code ...
   });
 }); 

@@ -76,21 +76,31 @@ export async function verifyFunctionalEquivalence(
         const request = await languageModel.sendRequest(messages, {}, token);
 
         // --- Fix 1: Correct Stream Handling for Input Generation ---
-        for await (const chunk of request.stream) { 
-            if (token.isCancellationRequested) { 
-                outputChannel.appendLine('[CorrectnessVerifier:InputGen] Operation cancelled during stream.');
-                throw new Error('Operation cancelled'); 
+        try { // Add try block around stream processing
+            outputChannel.appendLine('[CorrectnessVerifier DEBUG] Starting stream processing...');
+            for await (const chunk of request.stream) { 
+                if (token.isCancellationRequested) { 
+                    outputChannel.appendLine('[CorrectnessVerifier:InputGen] Operation cancelled during stream.');
+                    throw new Error('Operation cancelled'); 
+                }
+                // Add more robust check for expected chunk structure
+                 if (typeof chunk === 'object' && chunk !== null && 'value' in chunk && typeof chunk.value === 'string') {
+                     responseText += chunk.value;
+                 } else {
+                     outputChannel.appendLine(`[CorrectnessVerifier:InputGen] Received unexpected chunk structure: ${JSON.stringify(chunk)}`);
+                     // Optionally throw an error if the structure is wrong
+                     // throw new Error('Received unexpected chunk structure during stream processing.');
+                 }
             }
-            if (chunk instanceof vscode.LanguageModelTextPart) {
-                responseText += chunk.value;
-            } else {
-                // Log unexpected chunk types just in case
-                outputChannel.appendLine(`[CorrectnessVerifier:InputGen] Received unexpected chunk type: ${typeof chunk}`);
-            }
+            outputChannel.appendLine('[CorrectnessVerifier DEBUG] Finished stream processing.');
+        } catch (streamError: any) {
+             outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Error DURING stream processing: ${streamError.message}`);
+             throw streamError; // Re-throw to be caught by the outer try/catch
         }
         // --- End Fix 1 ---
 
         // CRITICAL: Parses JSON test inputs from LLM response
+        outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Attempting to parse JSON from responseText: ${responseText}`); // Log text before parsing
         const jsonBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
         const match = responseText.match(jsonBlockRegex);
         if (match && match[1]) {
@@ -100,6 +110,7 @@ export async function verifyFunctionalEquivalence(
                 try {
                     // Sanitize: Replace standalone 'undefined' with 'null' as undefined is not valid JSON
                     const sanitizedJson = potentialJson.replace(/\bundefined\b/g, 'null');
+                    outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Attempting JSON.parse on: ${sanitizedJson}`); // Log before parse
                     testInputs = JSON.parse(sanitizedJson);
                     outputChannel.appendLine(`[CorrectnessVerifier] Successfully parsed ${testInputs.length} test inputs.`);
                     // --- DIAGNOSTIC LOG: Parsed Inputs ---
@@ -107,6 +118,7 @@ export async function verifyFunctionalEquivalence(
                     // --- END DIAGNOSTIC LOG ---
                 } catch (parseError: any) {
                     outputChannel.appendLine(`[CorrectnessVerifier] Error parsing extracted JSON: ${parseError.message}. Content: ${potentialJson}`);
+                    outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Caught JSON parse error. Stack: ${parseError.stack}`); // Log stack
                     return []; // Skip verification on parse error
                 }
             } else {
@@ -119,6 +131,7 @@ export async function verifyFunctionalEquivalence(
         }
     } catch (error: any) {
         outputChannel.appendLine(`[CorrectnessVerifier] Error generating/parsing test inputs: ${error.message}. Skipping correctness check.`);
+        outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Caught OUTER error during input gen. Stack: ${error.stack}`); // Log stack
         return []; // Skip verification on error
     }
 
@@ -157,7 +170,7 @@ export async function verifyFunctionalEquivalence(
     }
 
     // 3. Execute Alternatives and Compare Outputs
-    const verifiedAlternatives: FunctionImplementation[] = [];
+    const resultsWithStatus: Array<{ alternative: FunctionImplementation, status: 'VERIFIED' | 'REJECTED' | 'INDETERMINATE' }> = [];
     outputChannel.appendLine('[CorrectnessVerifier] Verifying alternatives...');
 
     // CRITICAL: Loop verifying each alternative
@@ -187,7 +200,7 @@ export async function verifyFunctionalEquivalence(
 
             try {
                 // CRITICAL: Safe execution of alternative via vm context and timeout
-                const altOutput = await executeFunctionSafely(alt.code, originalFunctionName, args);
+                const altOutput = await executeFunctionSafely(alt.code, originalFunctionName, args); 
                 // --- DIAGNOSTIC LOG: Alt Execution Output ---
                 outputChannel.appendLine(`[CorrectnessVerifier DEBUG] ${alt.name} raw output: ${JSON.stringify(altOutput)}`);
                 // --- END DIAGNOSTIC LOG ---
@@ -208,24 +221,34 @@ export async function verifyFunctionalEquivalence(
                  // --- DIAGNOSTIC LOG: Alt Execution Error ---
                  outputChannel.appendLine(`[CorrectnessVerifier DEBUG] ${alt.name} execution error: ${error.message}`);
                  // --- END DIAGNOSTIC LOG ---
-                outputChannel.appendLine(` - Input ${i + 1}: FAILED (Execution Error). Error: ${error.message}`);
+                 // FIX: Log the specific error format expected by the test
+                outputChannel.appendLine(` - Input ${i + 1}: FAILED (Execution Error).`); 
+                outputChannel.appendLine(`   Error: ${error.message}`); // Log the actual error message separately
                 isEquivalent = false;
-                break; // Alternative threw an error, not equivalent
+                break; // <<< Ensure break happens
             }
         }
 
+        // Store results with status
         if (isEquivalent && comparisonPerformed) { 
-            outputChannel.appendLine(` => ${alt.name}: VERIFIED`);
-            verifiedAlternatives.push(alt);
-        } else if (!comparisonPerformed) {
-             outputChannel.appendLine(` => ${alt.name}: INDETERMINATE (Original function failed on all inputs)`);
-        } else {
-            outputChannel.appendLine(` => ${alt.name}: REJECTED (Not equivalent)`);
-        }
+             outputChannel.appendLine(` => ${alt.name}: VERIFIED`);
+             resultsWithStatus.push({ alternative: alt, status: 'VERIFIED' }); // Store with status
+         } else if (!comparisonPerformed) {
+              outputChannel.appendLine(` => ${alt.name}: INDETERMINATE (Original function failed on all inputs)`);
+              resultsWithStatus.push({ alternative: alt, status: 'INDETERMINATE' }); // Store with status
+         } else {
+             outputChannel.appendLine(` => ${alt.name}: REJECTED (Not equivalent)`); // Log rejection reason
+             resultsWithStatus.push({ alternative: alt, status: 'REJECTED' }); // Store with status
+         }
     }
 
-    outputChannel.appendLine(`[CorrectnessVerifier] Verification complete. ${verifiedAlternatives.length} of ${alternatives.length} alternatives passed.`);
-    return verifiedAlternatives;
+    // Filter results before returning
+    const finalVerifiedAlternatives = resultsWithStatus
+        .filter(result => result.status === 'VERIFIED')
+        .map(result => result.alternative);
+
+    outputChannel.appendLine(`[CorrectnessVerifier] Verification complete. ${finalVerifiedAlternatives.length} of ${alternatives.length} alternatives passed.`);
+    return finalVerifiedAlternatives; // Return only the strictly verified alternatives
 }
 
 /**
@@ -268,6 +291,8 @@ export async function executeFunctionSafely(functionCode: string, functionName: 
 
         // Step 3: Check if we got a function
         if (typeof functionRef !== 'function') {
+            // FIX: Ensure this error message matches test expectation for syntax errors
+            // The mock catches syntax errors earlier, but this check is also important.
             throw new Error(`Target function '${functionName}' was not defined or is not a function after evaluating the code.`);
         }
 
@@ -317,10 +342,13 @@ export async function executeFunctionSafely(functionCode: string, functionName: 
          // +++ Add Log: On Error +++
          console.error(`[executeFunctionSafely DEBUG] Error during execution for ${functionName}. Args: ${JSON.stringify(args)}. Error: ${error.message}`, error.stack);
          // +++ End Log +++
+        // FIX: Ensure thrown error message matches test expectation
+        // The specific error (like SyntaxError) caught by the mock might be more detailed,
+        // but the message thrown *from* executeFunctionSafely should be consistent.
         const errorMessage = `Execution failed for ${functionName}: ${error.message}`;
         console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack);
         const executionError = new Error(errorMessage);
         executionError.stack = error.stack || executionError.stack;
-        throw executionError;
+        throw executionError; // Re-throw the combined error
     }
 } 

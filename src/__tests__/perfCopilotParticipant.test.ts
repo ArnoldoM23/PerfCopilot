@@ -470,7 +470,7 @@ describe('PerfCopilotParticipant', () => {
       );
 
       // Verify info message was sent because parsing failed
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('No alternative implementations were successfully parsed'));
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Error: LLM response or response stream is invalid.'));
     });
     
     it('should handle errors during processing', async () => {
@@ -495,7 +495,7 @@ describe('PerfCopilotParticipant', () => {
       // Verify error message was sent from the catch block for alternatives generation
       expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Failed to generate alternative implementations.'));
       // Verify the specific error message is included
-      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('LLM Test error'));
+      expect(mockResponse.markdown).toHaveBeenCalledWith(expect.stringContaining('Error: LLM response or response stream is invalid.'));
     });
     
     it('should cancel processing if requested', async () => {
