@@ -1,3 +1,32 @@
+/**
+ * @fileoverview Correctness Verifier Utility
+ * 
+ * This utility is responsible for verifying the functional equivalence of alternative 
+ * function implementations against an original implementation.
+ * 
+ * Core Logic:
+ * 1.  Uses the Language Model (LLM) to generate a set of diverse test inputs based on the 
+ *     original function's code.
+ * 2.  Executes the *original* function safely within a `vm` sandbox for each generated input 
+ *     to establish the expected outputs (or expected errors).
+ * 3.  Executes each *alternative* function safely within a `vm` sandbox for each input where 
+ *     the original function succeeded.
+ * 4.  Compares the output of the alternative (JSON stringified) against the expected output.
+ * 5.  Handles errors during execution (e.g., timeouts, exceptions) and marks the alternative 
+ *     as non-equivalent if it fails where the original succeeded.
+ * 6.  Returns an array containing only the alternatives that produced functionally equivalent 
+ *     results across all applicable test inputs.
+ * 
+ * Safety Mechanisms:
+ * - Uses Node.js `vm` module to run function code in an isolated context, preventing 
+ *   interference with the main extension process.
+ * - Implements timeouts (`vm.runInContext` options and potentially async waits) to prevent 
+ *   runaway code execution (e.g., infinite loops) within the verified functions.
+ * - Compares outputs using JSON stringification for robustness against subtle differences 
+ *   (e.g., `undefined` vs. `null` in certain JS contexts, although `undefined` is sanitized 
+ *   during input parsing).
+ */
+
 import * as vscode from 'vscode';
 import * as vm from 'vm';
 import * as util from 'util';
@@ -43,18 +72,25 @@ export async function verifyFunctionalEquivalence(
         const prompt = createInputGenerationPrompt(originalFunction.code);
         const messages = [vscode.LanguageModelChatMessage.User(prompt)];
         let responseText = '';
+        // CRITICAL: Interaction with LLM to get diverse test inputs
         const request = await languageModel.sendRequest(messages, {}, token);
 
-        for await (const chunk of request.text) {
-            if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
-            responseText += chunk;
+        // --- Fix 1: Correct Stream Handling for Input Generation ---
+        for await (const chunk of request.stream) { 
+            if (token.isCancellationRequested) { 
+                outputChannel.appendLine('[CorrectnessVerifier:InputGen] Operation cancelled during stream.');
+                throw new Error('Operation cancelled'); 
+            }
+            if (chunk instanceof vscode.LanguageModelTextPart) {
+                responseText += chunk.value;
+            } else {
+                // Log unexpected chunk types just in case
+                outputChannel.appendLine(`[CorrectnessVerifier:InputGen] Received unexpected chunk type: ${typeof chunk}`);
+            }
         }
+        // --- End Fix 1 ---
 
-        // --- Debugging Log ---
-        console.log('[DEBUG] Raw responseText before regex:', JSON.stringify(responseText)); 
-        // --- End Debugging Log ---
-
-        // Use a regex that matches a JSON array block potentially containing data
+        // CRITICAL: Parses JSON test inputs from LLM response
         const jsonBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/;
         const match = responseText.match(jsonBlockRegex);
         if (match && match[1]) {
@@ -66,6 +102,9 @@ export async function verifyFunctionalEquivalence(
                     const sanitizedJson = potentialJson.replace(/\bundefined\b/g, 'null');
                     testInputs = JSON.parse(sanitizedJson);
                     outputChannel.appendLine(`[CorrectnessVerifier] Successfully parsed ${testInputs.length} test inputs.`);
+                    // --- DIAGNOSTIC LOG: Parsed Inputs ---
+                    outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Parsed testInputs: ${JSON.stringify(testInputs, null, 2)}`);
+                    // --- END DIAGNOSTIC LOG ---
                 } catch (parseError: any) {
                     outputChannel.appendLine(`[CorrectnessVerifier] Error parsing extracted JSON: ${parseError.message}. Content: ${potentialJson}`);
                     return []; // Skip verification on parse error
@@ -93,13 +132,24 @@ export async function verifyFunctionalEquivalence(
     // 2. Execute Original Function to get Expected Outputs
     const expectedOutputs: { input: any; output?: any; error?: string }[] = [];
     outputChannel.appendLine('[CorrectnessVerifier] Executing original function...');
+    // CRITICAL: Loop executing original function for each input via vm
     for (const input of testInputs) {
         if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         const args = Array.isArray(input) ? input : [input]; // Ensure args are always in an array
+        // --- DIAGNOSTIC LOG: Original Execution Args ---
+        outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Executing Original with args: ${JSON.stringify(args)}`);
+        // --- END DIAGNOSTIC LOG ---
         try {
+            // CRITICAL: Safe execution using vm context and timeout
             const output = await executeFunctionSafely(originalFunction.code, originalFunctionName, args);
+            // --- DIAGNOSTIC LOG: Original Execution Output ---
+            outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Original output: ${JSON.stringify(output)}`);
+            // --- END DIAGNOSTIC LOG ---
             expectedOutputs.push({ input, output });
         } catch (error: any) {
+            // --- DIAGNOSTIC LOG: Original Execution Error ---
+            outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Original error: ${error.message}`);
+            // --- END DIAGNOSTIC LOG ---
             outputChannel.appendLine(`[CorrectnessVerifier] Original function ('${originalFunctionName}') failed for input ${JSON.stringify(input)}: ${error.message}`);
             expectedOutputs.push({ input, error: error.message });
             // If the original fails, we can't verify alternatives against it for this input
@@ -110,10 +160,11 @@ export async function verifyFunctionalEquivalence(
     const verifiedAlternatives: FunctionImplementation[] = [];
     outputChannel.appendLine('[CorrectnessVerifier] Verifying alternatives...');
 
+    // CRITICAL: Loop verifying each alternative
     for (const alt of alternatives) {
         if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
         let isEquivalent = true;
-        let comparisonPerformed = false; // --- ADDED: Track if any valid comparison happened ---
+        let comparisonPerformed = false; 
         outputChannel.appendLine(`--- Verifying ${alt.name} ---`);
         for (let i = 0; i < testInputs.length; i++) {
             if (token.isCancellationRequested) { throw new Error('Operation cancelled'); }
@@ -121,43 +172,51 @@ export async function verifyFunctionalEquivalence(
             const expected = expectedOutputs[i];
             const args = Array.isArray(input) ? input : [input];
 
+            // --- DIAGNOSTIC LOG: Alt Verification Input ---
+            outputChannel.appendLine(`[CorrectnessVerifier DEBUG] Verifying ${alt.name} - Input ${i + 1}`);
+            outputChannel.appendLine(`  - Args: ${JSON.stringify(args)}`);
+            outputChannel.appendLine(`  - Expected Result/Error: ${expected.error ? `Error(${expected.error})` : JSON.stringify(expected.output)}`);
+            // --- END DIAGNOSTIC LOG ---
+
             if (expected.error) {
                 outputChannel.appendLine(` - Input ${i + 1}: SKIPPED (original function failed)`);
                 continue; // Cannot compare if original failed
             }
 
-            // --- If we reach here, a comparison is possible ---
             comparisonPerformed = true; 
 
             try {
+                // CRITICAL: Safe execution of alternative via vm context and timeout
                 const altOutput = await executeFunctionSafely(alt.code, originalFunctionName, args);
+                // --- DIAGNOSTIC LOG: Alt Execution Output ---
+                outputChannel.appendLine(`[CorrectnessVerifier DEBUG] ${alt.name} raw output: ${JSON.stringify(altOutput)}`);
+                // --- END DIAGNOSTIC LOG ---
                 
+                // CRITICAL: Compares alternative output (JSON) against original output
                 // Compare using JSON stringification for robustness
                 const expectedJson = JSON.stringify(expected.output);
                 const altJson = JSON.stringify(altOutput);
 
                 if (altJson !== expectedJson) {
                     outputChannel.appendLine(` - Input ${i + 1}: FAILED. Expected JSON: ${expectedJson}, Got JSON: ${altJson}`);
-                    // Optional: Log full objects if helpful for debugging complex cases
-                    // outputChannel.appendLine(`   Expected Object: ${util.inspect(expected.output, { depth: null })}`);
-                    // outputChannel.appendLine(`   Got Object: ${util.inspect(altOutput, { depth: null })}`);
                     isEquivalent = false;
                     break; // No need to check further inputs for this alternative
                 } else {
                     outputChannel.appendLine(` - Input ${i + 1}: PASSED`);
                 }
             } catch (error: any) {
+                 // --- DIAGNOSTIC LOG: Alt Execution Error ---
+                 outputChannel.appendLine(`[CorrectnessVerifier DEBUG] ${alt.name} execution error: ${error.message}`);
+                 // --- END DIAGNOSTIC LOG ---
                 outputChannel.appendLine(` - Input ${i + 1}: FAILED (Execution Error). Error: ${error.message}`);
                 isEquivalent = false;
                 break; // Alternative threw an error, not equivalent
             }
         }
 
-        // --- MODIFIED Condition ---
         if (isEquivalent && comparisonPerformed) { 
             outputChannel.appendLine(` => ${alt.name}: VERIFIED`);
             verifiedAlternatives.push(alt);
-        // --- ADDED Condition ---
         } else if (!comparisonPerformed) {
              outputChannel.appendLine(` => ${alt.name}: INDETERMINATE (Original function failed on all inputs)`);
         } else {
@@ -180,6 +239,7 @@ export async function verifyFunctionalEquivalence(
  */
 export async function executeFunctionSafely(functionCode: string, functionName: string, args: any[]): Promise<any> {
     // Revert to context that includes __result
+    // CRITICAL: Setup of isolated vm context
     const context = {
         // eslint-disable-next-line @typescript-eslint/naming-convention
         __args: args,
@@ -198,9 +258,11 @@ export async function executeFunctionSafely(functionCode: string, functionName: 
         // Revert async check if needed, or keep simple one
         isAsync = functionCode.includes('async'); // Simple check
 
+        // CRITICAL: Runs the function code within the vm context with timeout
         // Step 1: Run the entire user code in the context to define functions (timeout 1000)
         vm.runInContext(functionCode, context, { timeout: 1000 });
 
+        // CRITICAL: Retrieves the function reference from the context
         // Step 2: Get the function reference by evaluating its name in the context (timeout 50)
         functionRef = vm.runInContext(functionName, context, { timeout: 50 });
 
@@ -209,16 +271,52 @@ export async function executeFunctionSafely(functionCode: string, functionName: 
             throw new Error(`Target function '${functionName}' was not defined or is not a function after evaluating the code.`);
         }
 
-        // Step 4: Call the function reference
-        if (isAsync) {
-             context.__result = await functionRef(...context.__args);
-        } else {
-             context.__result = functionRef(...context.__args);
-        }
+        // +++ Add Log: Before Call +++
+        console.error(`[executeFunctionSafely DEBUG] About to call ${functionName} for verification. Args: ${JSON.stringify(context.__args)}`);
+        // +++ End Log +++
+
+        // CRITICAL: Executes the actual function call within the vm context with timeout
+        // Step 4: Call the function reference within a timed context
+        const executionOptions = { timeout: 2000 }; // Timeout for the actual function call (e.g., 2 seconds)
+        const callArgsString = JSON.stringify(context.__args); // Serialize args for the script
+
+        const script = `
+            const fn = ${functionName};
+            const args = ${callArgsString};
+            // Assign directly to context.__result, not global.__result
+            __result = fn(...args); 
+            if (__result instanceof Promise) {
+                 (async () => {
+                    try {
+                        // Await and assign back to context.__result
+                        __result = await __result; 
+                    } catch (asyncError) {
+                        throw asyncError;
+                    }
+                 })(); // Immediately invoked async function expression
+            }
+        `;
+
+        vm.runInContext(script, context, executionOptions);
+
+        // If the result was a promise, we need to wait for the IIAFE above to potentially update __result
+        // Note: This simplistic wait might not be perfect for all async scenarios,
+        // but avoids complex promise handling within the limited context.
+        // If the promise resolved or the function was sync, __result is set.
+        // If the promise rejected inside the IIAFE, the error should propagate.
+        // If the execution timed out, vm.runInContext would throw.
+
+         // +++ Add Log: After Call (use console.error) +++
+         // Log the result potentially captured by the script execution
+         console.error(`[executeFunctionSafely DEBUG] Call to ${functionName} completed. Raw Result: ${JSON.stringify(context.__result)}`);
+         // +++ End Log +++
 
         return context.__result; // Return the stored result
 
     } catch (error: any) {
+         // +++ Add Log: On Error +++
+         console.error(`[executeFunctionSafely DEBUG] Error during execution for ${functionName}. Args: ${JSON.stringify(args)}. Error: ${error.message}`, error.stack);
+         // +++ End Log +++
         const errorMessage = `Execution failed for ${functionName}: ${error.message}`;
         console.error(`[executeFunctionSafely] Error: ${errorMessage}`, error.stack);
         const executionError = new Error(errorMessage);

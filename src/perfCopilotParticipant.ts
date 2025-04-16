@@ -1,4 +1,30 @@
 /**
+ * @fileoverview PerfCopilot Chat Participant Implementation
+ * 
+ * This file defines the `PerfCopilotParticipant` class, which acts as the main entry point 
+ * for handling user interactions through the VS Code Chat interface (@perfcopilot).
+ * 
+ * Responsibilities:
+ * - Registers the chat participant with VS Code.
+ * - Receives user prompts containing JavaScript/TypeScript code to analyze.
+ * - Extracts and validates the function code from the prompt.
+ * - Interacts with the Language Model (LLM) via `vscode.lm` API to:
+ *   - Generate alternative function implementations focused on performance.
+ *   - Generate suitable test data for benchmarking the identified entry point.
+ *   - Analyze benchmark results and provide explanations.
+ * - Coordinates with the `CorrectnessVerifier` to check the functional equivalence of 
+ *   generated alternatives against the original function using LLM-generated test inputs.
+ * - Coordinates with the `BenchmarkService` to:
+ *   - Prepare implementations (renaming for isolated execution context).
+ *   - Generate the benchmark module code (containing implementations and test data).
+ *   - Execute the benchmark runner script (`benchmarkRunner.js`) as a child process.
+ *   - Parse the results from the runner script.
+ * - Streams progress updates and final results back to the user in the chat view.
+ * - Handles errors gracefully throughout the process, reporting issues to the user and logs.
+ * - Implements retry logic for LLM requests to improve reliability.
+ */
+
+/**
  * PerfCopilot Chat Participant
  * 
  * This file implements a VS Code Chat participant that handles performance optimization requests
@@ -74,6 +100,50 @@ export class PerfCopilotParticipant {
         }
     }
     
+    /**
+     * Helper function to send request to LLM with retry logic.
+     */
+    private async sendRequestWithRetry(
+        languageModel: vscode.LanguageModelChat,
+        messages: vscode.LanguageModelChatMessage[],
+        options: vscode.LanguageModelChatRequestOptions,
+        token: vscode.CancellationToken,
+        maxRetries: number = 1 // Default to 1 retry (2 attempts total)
+    ): Promise<vscode.LanguageModelChatResponse> {
+        let attempts = 0;
+        while (attempts <= maxRetries) {
+            attempts++;
+            try {
+                this.outputChannel.appendLine(`[LLM Request Attempt ${attempts}/${maxRetries + 1}] Sending...`);
+                const response = await languageModel.sendRequest(messages, options, token);
+                // Basic check: Does the response stream seem valid?
+                // We can't fully consume the stream here, but we can check if it exists.
+                if (!response || !response.stream) { 
+                    throw new Error('LLM response or response stream is invalid.');
+                }
+                this.outputChannel.appendLine(`[LLM Request Attempt ${attempts}] Success.`);
+                return response;
+            } catch (error: any) {
+                // Convert error to string before logging
+                const errorMessage = error instanceof Error ? error.message : String(error);
+                this.outputChannel.appendLine(`[LLM Request Attempt ${attempts}] FAILED: ${errorMessage}`);
+                if (attempts > maxRetries) {
+                    this.outputChannel.appendLine(`[LLM Request] Max retries reached. Throwing last error.`);
+                    throw error; // Throw the last error after all retries
+                }
+                // Optional: Add a small delay before retrying
+                if (!token.isCancellationRequested) {
+                     await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay
+                }
+                if (token.isCancellationRequested) {
+                     throw new Error('Operation cancelled by user during retry wait.');
+                }
+            }
+        }
+        // Should not be reachable, but satisfies compiler
+        throw new Error('sendRequestWithRetry logic error: loop completed unexpectedly.');
+    }
+
     /**
      * Creates a request handler function using vscode.lm for LLM interaction.
      */
@@ -161,13 +231,22 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                 const alternativesMessages = [vscode.LanguageModelChatMessage.User(alternativesPrompt)];
                 let alternativesResponseText = '';
                 try {
-                    const alternativesRequest = await languageModel.sendRequest(alternativesMessages, {}, token);
-                    for await (const chunk of alternativesRequest.text) {
+                    // FIX: Use retry helper
+                    const alternativesRequest = await this.sendRequestWithRetry(languageModel, alternativesMessages, {}, token);
+                    
+                    // CRITICAL: Correctly accumulates stream chunks for alternatives
+                    for await (const chunk of alternativesRequest.stream) { 
                         if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
                             break;
                         }
-                        alternativesResponseText += chunk;
+                        
+                        // --- Correct Handling based on Docs ---
+                        if (chunk instanceof vscode.LanguageModelTextPart) {
+                            alternativesResponseText += chunk.value; // Access the 'value' property
+                        } 
+                        // --- End Correct Handling ---
+                         
                     }
                     if (token.isCancellationRequested) {
                         response.markdown("Operation cancelled by user.");
@@ -212,15 +291,25 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     // Use only verified alternatives for benchmarking
                     const benchmarkPrompt = this.createBenchmarkPrompt(originalFunction, alternatives);
                     const benchmarkMessages = [vscode.LanguageModelChatMessage.User(benchmarkPrompt)];
+                    
+                    // FIX: Use retry helper
+                    const benchmarkRequest = await this.sendRequestWithRetry(languageModel, benchmarkMessages, {}, token);
+                    
+                    // FIX: Use the same stream handling as for alternatives
+                    // CRITICAL: Correctly accumulates stream chunks for benchmark config
                     let benchmarkResponseText = '';
-                    const benchmarkRequest = await languageModel.sendRequest(benchmarkMessages, {}, token);
-
-                    for await (const chunk of benchmarkRequest.text) {
+                    for await (const chunk of benchmarkRequest.stream) { 
                         if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
                             break;
                         }
-                        benchmarkResponseText += chunk;
+                        
+                        if (chunk instanceof vscode.LanguageModelTextPart) {
+                            benchmarkResponseText += chunk.value; // Access the 'value' property
+                        } else {
+                            // Log unexpected chunk types for diagnostics
+                            this.outputChannel.appendLine(`[Benchmark Config Stream] Received unexpected chunk type: ${typeof chunk} - ${JSON.stringify(chunk)}`);
+                        }
                     }
                     if (token.isCancellationRequested) { return {}; }
 
@@ -230,8 +319,15 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     const match = jsonBlockRegex.exec(benchmarkResponseText);
                     if (match && match[1]) {
                         const jsonString = match[1].trim();
+                        this.outputChannel.appendLine(`[DEBUG] Extracted benchmark config JSON string:\n${jsonString}`); // Log the raw JSON
                         try {
                             benchmarkConfig = JSON.parse(jsonString);
+                            // Log the parsed config structure
+                            this.outputChannel.appendLine(`[DEBUG] Parsed benchmarkConfig object:\n${JSON.stringify(benchmarkConfig, null, 2)}`);
+
+                            // Specifically log the parsed testData
+                            this.outputChannel.appendLine(`[DEBUG] Parsed testData type: ${typeof benchmarkConfig.testData}, value: ${JSON.stringify(benchmarkConfig.testData)}`);
+
                             // Basic validation
                             if (!benchmarkConfig.entryPointName || typeof benchmarkConfig.entryPointName !== 'string' ||
                                 !benchmarkConfig.implementations || typeof benchmarkConfig.implementations !== 'object' ||
@@ -252,6 +348,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     // --- NEW: Correctness Check (Run AFTER getting entryPointName) ---
                     response.progress('Verifying functional correctness...');
                     try {
+                        // CRITICAL: Uses CorrectnessVerifier with LLM-identified entry point name
                         // Use the entryPointName identified by the LLM for verification
                         const checkResults = await verifyFunctionalEquivalence(
                             originalFunction, 
@@ -298,6 +395,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     const processedImplementations: Record<string, string> = {};
                     const originalEntryPoint = benchmarkConfig.entryPointName;
                     
+                    // CRITICAL: Uses ONLY verified alternatives for benchmarking
                     // Use ONLY verified alternatives from now on
                     const implementationsToProcess = {
                         [originalFunction.name]: originalFunction.code,
@@ -309,6 +407,7 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                         const sanitizedKey = rawKey.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
                         this.outputChannel.appendLine(`Processing implementation: ${rawKey} -> ${sanitizedKey}`);
                         
+                        // CRITICAL: Renames functions and replaces recursive calls for isolated execution
                         // Replace original function name and recursive calls with the sanitized key
                         const processedCode = this.benchmarkService.replaceRecursiveCalls(
                             code,
@@ -320,7 +419,11 @@ ${functionCode.substring(0, 500)}${functionCode.length > 500 ? '...' : ''}\n\`\`
                     }
                     // --- End Processing ---
 
+                    // Log the final testData and implementations just before module creation
+                    this.outputChannel.appendLine(`[DEBUG] Final testData for benchmark module: ${JSON.stringify(benchmarkConfig.testData)}`);
+                    this.outputChannel.appendLine(`[DEBUG] Final implementations for benchmark module keys: ${Object.keys(processedImplementations).join(', ')}`);
 
+                    // CRITICAL: Constructs the JS module string for the benchmark runner script
                     // Construct the actual code module to be run by benchmarkRunner.js
                     benchmarkCode = `
 // Benchmark configuration generated by PerfCopilot
@@ -338,6 +441,9 @@ module.exports = {
     implementations
 };
                     `;
+                    // Log the generated benchmark code
+                    this.outputChannel.appendLine(`[DEBUG] Generated benchmark module code:\n---\n${benchmarkCode}\n---`);
+
                     this.outputChannel.appendLine(`Generated benchmark module code. Length: ${benchmarkCode.length}`);
 
                 } catch (error) {
@@ -354,6 +460,7 @@ module.exports = {
                 }
                 let benchmarkResults: any;
                 try {
+                    // CRITICAL: Executes the benchmark via BenchmarkService
                     benchmarkResults = await this.benchmarkService.runBenchmark(benchmarkCode);
                     this.outputChannel.appendLine(`Benchmark results received: ${JSON.stringify(benchmarkResults)}`);
                     if (!benchmarkResults || !benchmarkResults.results || benchmarkResults.results.length === 0) {
@@ -377,13 +484,23 @@ module.exports = {
                 const explanationMessages = [vscode.LanguageModelChatMessage.User(explanationPrompt)];
                 
                 try {
-                    const explanationRequest = await languageModel.sendRequest(explanationMessages, {}, token);
-                    for await (const chunk of explanationRequest.text) {
+                    // FIX: Use retry helper
+                    const explanationRequest = await this.sendRequestWithRetry(languageModel, explanationMessages, {}, token);
+                    
+                    // CRITICAL: Streams final explanation from LLM
+                    for await (const chunk of explanationRequest.stream) { // Use stream property
                          if (token.isCancellationRequested) {
                             response.markdown("Operation cancelled by user.");
                             break;
                          }
-                         response.markdown(chunk);
+                         // --- Correct Handling based on Docs ---
+                         if (chunk instanceof vscode.LanguageModelTextPart) {
+                             response.markdown(chunk.value); // Display text part value
+                         } else {
+                            // Log unexpected chunk types for diagnostics 
+                            this.outputChannel.appendLine(`[Explanation Stream] Received unexpected chunk type: ${typeof chunk} - ${JSON.stringify(chunk)}`);
+                         }
+                         // --- End Correct Handling ---
                     }
                      if (token.isCancellationRequested) {return {};}
                     this.outputChannel.appendLine(`Finished streaming explanation.`);
@@ -508,9 +625,11 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
 
         try {
             // Regex to find JSON code block
+            // CRITICAL: Regex for JSON block is correct for an array no not modify.
             const jsonBlockRegex = /```(?:json)?\s*([\[][\s\S]*[\]])\s*```/;
             const match = responseText.match(jsonBlockRegex);
 
+            // CRITICAL: Parses alternative implementations from LLM response (JSON focus)
             let jsonString: string | undefined;
 
             if (match && match[1]) {
@@ -529,6 +648,7 @@ Provide *only* the markdown analysis. Do not include introductory or concluding 
                 this.outputChannel.appendLine(`Could not extract a JSON array string from the response.`);
                 return [];
             }
+            
 
             const parsed = JSON.parse(jsonString);
 
@@ -640,9 +760,10 @@ Generate a small JSON array containing 3-5 diverse test inputs suitable for call
 
 **Output Format:**
 Provide your response *strictly* as a JSON array. Each element in the array represents the arguments for one function call. 
-- If the function takes one argument, each element is the argument value (e.g., \`[1, [], "test"]\`).
-- If the function takes multiple arguments, each element should be an array containing those arguments in the correct order (e.g., \`[[1, 2], [null, "a"], [10, undefined]]\`).
+- If the function takes one argument, each element is the argument value (e.g., \`[1, [], \"test\"]\`).
+- If the function takes multiple arguments, each element should be an array containing those arguments in the correct order (e.g., \`[[1, 2], [null, \"a\"], [10, undefined]]\`).
 - If the function takes no arguments, return an empty array \`[]\`
+- **Ensure all object keys within the generated data are enclosed in double quotes (e.g., \`\"key\": value\`) as required by strict JSON format.**
 
 **Example (Single Argument Function like sum(arr)):**
 \`\`\`json

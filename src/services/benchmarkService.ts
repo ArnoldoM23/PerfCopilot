@@ -1,4 +1,28 @@
 /**
+ * @fileoverview Benchmark Service Implementation
+ * 
+ * This service encapsulates the logic for orchestrating the execution of performance 
+ * benchmarks. It acts as the bridge between the main chat participant logic 
+ * and the external benchmark runner script.
+ * 
+ * Responsibilities:
+ * - Receives the generated benchmark module code (containing implementations and test data) 
+ *   from the chat participant.
+ * - Creates a temporary file to store this module code using utilities.
+ * - Locates and executes the dedicated benchmark runner script (`benchmarkRunner.js`) 
+ *   as a Node.js child process, passing the path to the temporary file.
+ * - Captures the stdout and stderr output from the runner script.
+ * - Parses the output from the runner script to extract the benchmark results.
+ *   - Prioritizes parsing a specific `RESULTS_JSON:` line for structured data.
+ *   - Falls back to text-based parsing of Benny's standard output if JSON is missing/invalid.
+ *   - Handles errors reported by the benchmark script (e.g., `BENCHMARK_ERROR`).
+ * - Includes logic (`replaceRecursiveCalls`) to prepare function code strings before 
+ *   generating the benchmark module, ensuring functions run in isolation and recursive 
+ *   calls within alternatives point to the correctly named function within the runner's context.
+ * - Returns the parsed benchmark results (or throws an error if execution/parsing fails).
+ */
+
+/**
  * Benchmark Service
  * 
  * This service is responsible for running benchmarks to compare
@@ -50,6 +74,7 @@ export class BenchmarkService {
                 throw new Error(`Benchmark runner script not found at ${runnerScriptPath}`);
             }
             
+            // CRITICAL: Executes the benchmark runner node script using the utility function.
             // Run the permanent runner script, passing the temp functions file path as an argument
             this.outputChannel.appendLine(`Executing benchmark runner: ${runnerScriptPath} with ${tempFuncFilePath}`);
             const output = await runNodeScript(runnerScriptPath, [tempFuncFilePath]); // Pass file path as arg
@@ -76,7 +101,7 @@ export class BenchmarkService {
     private parseBenchmarkResults(output: string): BenchmarkComparison {
         let jsonString: string | undefined;
         try {
-            // Refined Regex: Match start of line, RESULTS_JSON:, optional whitespace,
+             // Refined Regex: Match start of line, RESULTS_JSON:, optional whitespace,
             // then capture a potentially nested JSON object until the final closing brace on the line.
             // Explanation:
             // ^RESULTS_JSON:   - Marker at start of line (m flag)
@@ -88,6 +113,8 @@ export class BenchmarkService {
             // )              - End capture group 1
             // \s*            - Optional trailing whitespace
             // $              - End of line (m flag)
+            // CRITICAL: Attempts to parse structured JSON results first (priority)
+            // Looks for the RESULTS_JSON: marker for reliable parsing.
             const jsonMatch = output.match(/^\s*RESULTS_JSON:\s*(.*)$/m);
 
             if (jsonMatch && jsonMatch[1]) {
@@ -123,6 +150,7 @@ export class BenchmarkService {
         }
         
         // Fallback: Check for BENCHMARK_ERROR before attempting text parsing
+        // CRITICAL: Explicitly checks for BENCHMARK_ERROR marker from the script.
         const errorMatch = output.match(/^BENCHMARK_ERROR:\s*({[\s\S]*?})$/m);
         if (errorMatch && errorMatch[1]) {
             this.outputChannel.appendLine(`Found BENCHMARK_ERROR line: ${errorMatch[1]}`);
@@ -145,6 +173,8 @@ export class BenchmarkService {
     
     /**
      * Parses benchmark results from plain text output.
+     * CRITICAL: Fallback parsing logic for Benny's standard text output if JSON fails.
+     * This ensures results can still be shown even if JSON parsing breaks.
      * 
      * @param output - The text output from the benchmark
      * @returns The parsed benchmark comparison results
@@ -190,6 +220,9 @@ export class BenchmarkService {
 
     /**
      * Helper function to replace the definition and internal recursive calls of a function.
+     * CRITICAL: Renames function definitions AND internal recursive calls.
+     * This allows alternatives to run in the isolated vm context of the runner 
+     * without name collisions and ensures recursion within an alternative calls itself correctly.
      * 
      * @param code - The string containing the function code.
      * @param originalName - The original name of the function.
@@ -197,6 +230,9 @@ export class BenchmarkService {
      * @returns The modified code string with the function renamed and recursive calls updated.
      */
     public replaceRecursiveCalls(code: string, originalName: string, newName: string): string {
+        // CRITICAL: Renames function definitions AND internal recursive calls.
+        // This allows alternatives to run in the isolated vm context of the runner 
+        // without name collisions and ensures recursion within an alternative calls itself correctly.
         // This helper transforms a code snippet defining a function named `originalName`
         // into one defining a function named `newName`, ensuring internal recursive
         // calls to `originalName` are also replaced with `newName`.
