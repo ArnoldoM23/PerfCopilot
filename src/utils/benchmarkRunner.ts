@@ -66,20 +66,21 @@ let argsForRun: any[] = [];
 
 // Determine arguments once
 try {
-    // Reuse the argument handling logic from the original loop
     const allTestData = testData; // Use the module-level testData
+
+    // Check for the specific known structure of findAllMatchingExpoResolutionPathsOld testData
     if (typeof allTestData === 'object' && allTestData !== null && !Array.isArray(allTestData) && allTestData.indexMapping && allTestData.resolutionInfo) {
+        // Specific case for findAll... which takes 2 object arguments
         argsForRun = [allTestData.indexMapping, allTestData.resolutionInfo];
-    } else if (Array.isArray(allTestData) && allTestData.length > 0) {
-         const firstTestCase = allTestData[0];
-         if(Array.isArray(firstTestCase)) {
-            argsForRun = firstTestCase;
-         } else {
-            argsForRun = [firstTestCase];
-         }
-    } else if (allTestData !== undefined) {
+    } else {
+        // Default case: Assume testData represents a SINGLE argument for the benchmark function.
+        // This works for processNumbers where testData is the array argument itself.
+        // This would also work if testData was a single object or primitive.
+        // This might fail if testData is an array meant to be spread as multiple arguments (e.g., testData = [5, 10] for add(a,b)) -
+        // requires LLM to provide testData appropriately based on function signature.
         argsForRun = [allTestData];
     }
+
     console.log('[BenchmarkRunner] Determined argsForRun:', JSON.stringify(argsForRun));
 } catch (argError) {
     console.error(`BENCHMARK_ERROR: Failed to determine arguments from testData: ${argError}`);
