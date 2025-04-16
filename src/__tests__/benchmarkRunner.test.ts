@@ -123,7 +123,7 @@ module.exports = {
 
     } finally {
         // Add a small delay before cleanup to give the child process time to read the file
-        await new Promise(resolve => setTimeout(resolve, 100)); 
+        await new Promise(resolve => setTimeout(resolve, 250)); // Increased from 100ms to 250ms
 
         // Cleanup the temporary file (leave directory for simplicity or clean later)
         if (tempFilePath) {
