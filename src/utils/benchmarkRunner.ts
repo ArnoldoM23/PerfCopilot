@@ -130,7 +130,7 @@ export function compileImplementations(
             const context = {
                  // Basic safe globals
                  console: { log: () => {}, warn: () => {}, error: () => {} }, // Prevent benchmarked code logging
-                 Math: Math,
+                 math: Math,
                  // Add other safe globals if needed, but avoid anything complex/stateful
             };
             vm.createContext(context);
@@ -160,15 +160,17 @@ export function compileImplementations(
 // +++ END REFACTOR HELPER FUNCTION +++
 
 // Wrap the main logic in an async function to allow awaiting Benny's completion
-async function runBenchmarks(functionsFilePath: string) {
+// Export for testing
+export async function runBenchmarks(functionsFilePath: string, _mockModule?: Record<string, any>) {
     // +++ DEBUG LOG +++
     console.log(`[BenchmarkRunner DEBUG] Checking existence of: ${functionsFilePath}`);
 
+    // Revert back to synchronous existsSync check
     if (!fs.existsSync(functionsFilePath)) {
-      // +++ DEBUG LOG +++
-      console.error(`[BenchmarkRunner DEBUG] fs.existsSync returned false for: ${functionsFilePath}`);
-      console.error(`BENCHMARK_ERROR: Functions file not found: ${functionsFilePath}`);
-      process.exit(1);
+        // +++ DEBUG LOG +++
+        console.error(`[BenchmarkRunner DEBUG] fs.existsSync returned false for: ${functionsFilePath}`);
+        console.error(`BENCHMARK_ERROR: Functions file not found: ${functionsFilePath}`);
+        process.exit(1);
     }
 
     // +++ DEBUG LOG +++
@@ -177,19 +179,26 @@ async function runBenchmarks(functionsFilePath: string) {
     console.log('[BenchmarkRunner] Required functions file successfully:', functionsFilePath);
 
     let loadedModule: Record<string, any>;
-    try {
-      // Require the dynamically generated file
-      const requiredModule = require(path.resolve(functionsFilePath));
-      // +++ DEBUG LOG +++
-      console.log(`[BenchmarkRunner DEBUG] Successfully required module from: ${functionsFilePath}`);
-      // Basic type check after require
-      if (typeof requiredModule !== 'object' || requiredModule === null) {
-          throw new Error('Module did not export an object.');
-      }
-      loadedModule = requiredModule as Record<string, any>;
-    } catch (error) {
-      console.error(`BENCHMARK_ERROR: Failed to load functions from ${functionsFilePath}: ${error}`);
-      process.exit(1);
+
+    // --- Module Loading --- 
+    if (_mockModule) {
+        console.log('[BenchmarkRunner DEBUG] Using provided mock module.');
+        loadedModule = _mockModule;
+    } else {
+        try {
+            // Require the dynamically generated file
+            const requiredModule = require(path.resolve(functionsFilePath));
+            // +++ DEBUG LOG +++
+            console.log(`[BenchmarkRunner DEBUG] Successfully required module from: ${functionsFilePath}`);
+            // Basic type check after require
+            if (typeof requiredModule !== 'object' || requiredModule === null) {
+                throw new Error('Module did not export an object.');
+            }
+            loadedModule = requiredModule as Record<string, any>;
+        } catch (error) {
+            console.error(`BENCHMARK_ERROR: Failed to load functions from ${functionsFilePath}: ${error}`);
+            process.exit(1);
+        }
     }
 
     // Validate required exports from the loaded module
@@ -261,7 +270,7 @@ async function runBenchmarks(functionsFilePath: string) {
             const context = {
                 // Include necessary globals if functions depend on them, but NOT testData here
                  console: { log: () => {}, warn: () => {}, error: () => {} },
-                 Math: Math
+                 math: Math
             };
             vm.createContext(context);
             // Run the code to define the function in the context
