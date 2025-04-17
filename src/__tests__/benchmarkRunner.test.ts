@@ -411,7 +411,7 @@ describe('compileImplementations', () => {
         jest.clearAllMocks();
         // Even simpler mock for vm.runInContext
         mockedRunInContext.mockImplementation((codeOrKey: string, context: any) => {
-            if (!context) return undefined;
+            if (!context) { return undefined; }
 
             // If codeOrKey is a known implementation string, add dummy fn to context
             if (codeOrKey === 'const Original = () => {};') {
