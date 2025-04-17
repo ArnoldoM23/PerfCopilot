@@ -1,4 +1,15 @@
 /**
+ * @fileoverview Utility Functions for PerfCopilot
+ * 
+ * This file provides a collection of helper functions used across the PerfCopilot extension.
+ * These include:
+ * - Basic JavaScript function validation.
+ * - Temporary file creation.
+ * - Execution of Node.js scripts as child processes.
+ * - Extraction of function names from code strings.
+ */
+
+/**
  * Utility Functions for PerfCopilot
  * 
  * This file contains various utility functions used throughout the extension.
@@ -78,7 +89,8 @@ export async function createTempFile(content: string, filename: string): Promise
  */
 export function runNodeScript(scriptPath: string, args: string[] = []): Promise<string> {
     return new Promise((resolve, reject) => {
-        // Spawn a Node.js process
+        console.log(`[runNodeScript] Spawning: node ${scriptPath} ${args.join(' ')}`);
+        // CRITICAL: Spawns the benchmark runner script as a separate Node.js process
         const childProcess = spawn('node', [scriptPath, ...args]);
         
         let outputData = '';
@@ -86,29 +98,41 @@ export function runNodeScript(scriptPath: string, args: string[] = []): Promise<
         
         // Collect stdout data
         childProcess.stdout.on('data', (data) => {
+            console.log(`[runNodeScript STDOUT chunk]: ${data.toString()}`);
             outputData += data.toString();
         });
         
         // Collect stderr data
         childProcess.stderr.on('data', (data) => {
+            console.log(`[runNodeScript STDERR chunk]: ${data.toString()}`);
             errorData += data.toString();
         });
         
         // Handle process completion
+        // CRITICAL: Collects stdout/stderr and resolves/rejects based on exit code
         childProcess.on('close', (code) => {
+            const combinedOutput = outputData + (errorData ? `\n--- STDERR ---\n${errorData}` : '');
+            console.log(`[runNodeScript] Process closed. Code: ${code}. Total captured output length: ${combinedOutput.length}`);
+
+             // +++ ADD UNIQUE MARKER LOGS around the full output +++
+             console.log(`>>> !!! BENCHMARK RUNNER SCRIPT OUTPUT START !!! >>>`);
+             console.log(combinedOutput); // Log the whole captured output
+             console.log(`<<< !!! BENCHMARK RUNNER SCRIPT OUTPUT END !!! <<<`);
+             // +++ END UNIQUE MARKER LOGS +++
+             
             if (code !== 0) {
-                // Include both stdout and stderr in the rejection for debugging
+                console.log(`[runNodeScript] Rejecting due to non-zero exit code.`);
                 reject(new Error(`Script exited with code ${code}. Stderr: ${errorData}. Stdout: ${outputData}`));
                 return;
             }
             
-            // Combine stdout and stderr in the resolved output for easier debugging
-            const combinedOutput = outputData + (errorData ? `\n--- STDERR ---\n${errorData}` : '');
+            console.log(`[runNodeScript] Resolving successfully.`);
             resolve(combinedOutput);
         });
         
         // Handle process errors (e.g., node not found)
         childProcess.on('error', (err) => {
+            console.log(`[runNodeScript] Process error event: ${err}`);
             reject(err);
         });
     });
@@ -121,6 +145,8 @@ export function runNodeScript(scriptPath: string, args: string[] = []): Promise<
  * @returns The function name or undefined if not found
  */
 export function extractFunctionName(functionCode: string): string | undefined {
+    // CRITICAL: Regex-based extraction of function name for user display/identification
+    // Note: Relies on common function definition patterns.
     // Try to match function declarations: function name(...) {...}
     const funcDeclarationMatch = functionCode.match(/function\s+([a-zA-Z_$][\w$]*)\s*\(/);
     if (funcDeclarationMatch) {
