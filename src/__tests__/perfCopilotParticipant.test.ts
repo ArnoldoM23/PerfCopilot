@@ -40,6 +40,11 @@ jest.mock('../utils/correctnessVerifier', () => ({
   verifyFunctionalEquivalence: jest.fn(), // Default mock implementation
 }));
 
+// Add type for LanguageModelChatResponse if not available globally in tests
+type MockLMResponse = {
+    stream: AsyncIterable<vscode.LanguageModelTextPart>;
+}
+
 describe('PerfCopilotParticipant', () => {
   let mockOutputChannel: MockOutputChannel;
   let participant: PerfCopilotParticipant;
@@ -765,5 +770,149 @@ describe('PerfCopilotParticipant', () => {
       // Restore mock
       (isValidJavaScriptFunction as jest.Mock).mockImplementation(originalIsValidMockImplementation);
     });
+  });
+
+  // --- Tests for sendRequestWithRetry --- 
+  describe('sendRequestWithRetry', () => {
+    let mockLMForRetry: jest.Mocked<vscode.LanguageModelChat>;
+    let mockMessages: vscode.LanguageModelChatMessage[];
+    let mockOptions: vscode.LanguageModelChatRequestOptions;
+    let mockTokenForRetry: { isCancellationRequested: boolean; onCancellationRequested: jest.Mock };
+
+    // Helper to create a mock stream
+    async function* createMockStream(content: string): AsyncIterable<vscode.LanguageModelTextPart> {
+        yield { value: content } as vscode.LanguageModelTextPart;
+    }
+
+    beforeEach(() => {
+        // Reset LM mock specifically for these tests
+        mockLMForRetry = {
+            sendRequest: jest.fn(),
+            // Add other properties if needed by the method under test, though likely not
+            vendor: 'mockVendor',
+            name: 'mockLM',
+            version: '1.0',
+            family: 'mockFamily'
+        } as unknown as jest.Mocked<vscode.LanguageModelChat>; 
+        
+        mockMessages = [vscode.LanguageModelChatMessage.User('test prompt')];
+        mockOptions = {};
+        mockTokenForRetry = {
+            isCancellationRequested: false,
+            onCancellationRequested: jest.fn(() => ({ dispose: jest.fn() }))
+        };
+         // Ensure console.error is not silenced here unless needed
+    });
+
+    it('should succeed on the first attempt', async () => {
+        // Revert to original mock response
+        const mockSuccessResponse: MockLMResponse = { stream: createMockStream('Success') };
+        mockLMForRetry.sendRequest.mockResolvedValue(mockSuccessResponse as any);
+
+        const response = await (participant as any).sendRequestWithRetry(
+            mockLMForRetry,
+            mockMessages,
+            mockOptions,
+            mockTokenForRetry
+        );
+
+        expect(mockLMForRetry.sendRequest).toHaveBeenCalledTimes(1);
+        expect(response).toBe(mockSuccessResponse);
+    });
+
+    it('should succeed on the second attempt after one failure', async () => {
+        const mockError = new Error('LLM Failed Temporarily');
+
+        const mockSuccessResponse: MockLMResponse = { stream: createMockStream('Success on Retry') };
+
+        mockLMForRetry.sendRequest
+            .mockRejectedValueOnce(mockError)
+            .mockResolvedValueOnce(mockSuccessResponse as any);
+
+        const response = await (participant as any).sendRequestWithRetry(
+            mockLMForRetry,
+            mockMessages,
+            mockOptions,
+            mockTokenForRetry,
+            1 // Explicitly set maxRetries to 1 (default)
+        );
+
+        expect(mockLMForRetry.sendRequest).toHaveBeenCalledTimes(2);
+        expect(response).toBe(mockSuccessResponse);
+    });
+
+    it('should fail after exhausting all retries', async () => {
+        const mockError = new Error('LLM Persistent Failure');
+        mockLMForRetry.sendRequest.mockRejectedValue(mockError); // Always fail
+
+        await expect((participant as any).sendRequestWithRetry(
+            mockLMForRetry,
+            mockMessages,
+            mockOptions,
+            mockTokenForRetry,
+            1 // maxRetries = 1 (total 2 attempts)
+        )).rejects.toThrow(mockError);
+
+        expect(mockLMForRetry.sendRequest).toHaveBeenCalledTimes(2);
+    });
+
+     it('should fail immediately if response stream is invalid on first try', async () => {
+         // Revert to simulating invalid response with null stream
+         const invalidResponse = { stream: null }; 
+         mockLMForRetry.sendRequest.mockResolvedValue(invalidResponse as any);
+
+         await expect((participant as any).sendRequestWithRetry(
+             mockLMForRetry,
+             mockMessages,
+             mockOptions,
+             mockTokenForRetry,
+             1 
+         )).rejects.toThrow('LLM response or response stream is invalid.');
+
+         expect(mockLMForRetry.sendRequest).toHaveBeenCalledTimes(2);
+     });
+
+     it('should fail immediately if cancelled during retry wait', async () => {
+         jest.useFakeTimers();
+         const mockError = new Error('LLM Failed First Time');
+         mockLMForRetry.sendRequest.mockRejectedValueOnce(mockError);
+
+         const promise = (participant as any).sendRequestWithRetry(
+             mockLMForRetry,
+             mockMessages,
+             mockOptions,
+             mockTokenForRetry,
+             1
+         );
+
+         // Simulate cancellation happening *after* the first failure but *before* the delay finishes
+         mockTokenForRetry.isCancellationRequested = true; 
+         
+         // Advance timer past the 500ms delay
+         jest.advanceTimersByTime(501);
+
+         await expect(promise).rejects.toThrow('Operation cancelled by user during retry wait.');
+
+         expect(mockLMForRetry.sendRequest).toHaveBeenCalledTimes(1);
+         jest.useRealTimers();
+     });
+
+     it('should not retry if cancelled immediately after first failure', async () => {
+         const mockError = new Error('LLM Failed First Time');
+         mockLMForRetry.sendRequest.mockRejectedValueOnce(mockError);
+
+         // Simulate cancellation happening immediately
+         mockTokenForRetry.isCancellationRequested = true; 
+
+         await expect((participant as any).sendRequestWithRetry(
+             mockLMForRetry,
+             mockMessages,
+             mockOptions,
+             mockTokenForRetry,
+             1
+         )).rejects.toThrow('Operation cancelled by user during retry wait.'); // Should throw cancellation error
+
+         expect(mockLMForRetry.sendRequest).toHaveBeenCalledTimes(1);
+     });
   });
 }); 
