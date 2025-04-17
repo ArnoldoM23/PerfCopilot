@@ -8,9 +8,10 @@
 **Analyze and optimize JavaScript/TypeScript functions for performance directly within Visual Studio Code using the power of AI.**
 
 PerfCopilot leverages GitHub Copilot (or compatible AI models) to:
-*   Generate performance-optimized alternatives for your functions.
-*   Automatically benchmark the original and alternative implementations using `benny.js`.
-*   Present clear performance comparisons and explanations directly in the VS Code Chat view.
+*   **Accelerate Your Code:** Identify performance bottlenecks and discover optimized function alternatives using advanced AI.
+*   **Quantify Improvements:** Automatically benchmark your original code against verified AI-generated suggestions using `benny.js` to measure real-world speed gains (ops/sec).
+*   **Save Development Time:** Automate the complex tasks of generating, functionally verifying, and benchmarking potential performance improvements.
+*   **Gain Actionable Insights:** Receive clear, AI-driven explanations alongside benchmark results directly in the VS Code Chat view, explaining *why* an alternative is faster.
 
 ## Features
 
@@ -77,6 +78,87 @@ There are two main ways to use PerfCopilot:
    };
    ```
 
+   **Example: Analyzing a Function with Dependencies**
+
+   If the function you want to analyze (`processNumbers` below) calls other functions *you've defined* (`naiveFactorial` below), include those dependent functions as well. This allows PerfCopilot to analyze the complete execution path and suggest optimizations that might involve either function.
+
+   ```javascript
+   // Inefficient helper function
+   const naiveFactorial = (n) => {
+     if (n < 0) throw new Error('Cannot compute factorial of negative numbers.');
+     if (n === 0 || n === 1) return 1;
+
+     let result = 1;
+     for (let i = 2; i <= n; i++) {
+       // Instead of a straightforward "result *= i",
+       // we use a loop to multiply one number at a time (inefficiently).
+       let intermediate = 0;
+       for (let j = 0; j < i; j++) {
+         intermediate += result; // Repeated addition
+       }
+       result = intermediate;
+     }
+
+     return result;
+   }
+
+   /**
+   * Main function that processes an array of numbers by
+   * computing their factorial via a non-optimal approach.
+   *
+   * @param {number[]} numbers - Array of non-negative integers.
+   * @returns {Object[]} Array of objects with original and factorial values.
+   */
+   function processNumbers(numbers) {
+     const results = [];
+
+     for (const num of numbers) {
+       const fact = naiveFactorial(num); // Calls the helper
+       results.push({
+         original: num,
+         factorial: fact,
+       });
+     }
+
+     return results;
+   }
+   ```
+
+   **Example Chat Query (Including Dependency):**
+
+   ```
+   @PerfCopilot
+   // Helper function (dependency)
+   const naiveFactorial = (n) => {
+     if (n < 0) throw new Error('Cannot compute factorial of negative numbers.');
+     if (n === 0 || n === 1) return 1;
+     let result = 1;
+     for (let i = 2; i <= n; i++) {
+       let intermediate = 0;
+       for (let j = 0; j < i; j++) {
+         intermediate += result;
+       }
+       result = intermediate;
+     }
+     return result;
+   }
+
+   // Main function to analyze
+   function processNumbers(numbers) {
+     const results = [];
+     for (const num of numbers) {
+       const fact = naiveFactorial(num);
+       results.push({
+         original: num,
+         factorial: fact,
+       });
+     }
+     return results;
+   }
+   ```
+
+   *(Note: Provide all relevant functions together in the same prompt. PerfCopilot will typically identify the last function as the main one to analyze, but including dependencies ensures a complete analysis and enables more effective optimization suggestions.)*
+
    *   PerfCopilot will respond in the chat with the analysis, including generated alternatives, benchmark results, and explanations.
 
 **2. Using the Editor Context Menu**
@@ -91,53 +173,22 @@ There are two main ways to use PerfCopilot:
 
 *(The exact format might vary slightly)*
 
-```markdown
-✅ Function `calculateFactorial` identified. Analyzing...
-✅ Generated 2 alternative implementations.
-✅ AI generated benchmark code.
-✅ Benchmarks completed.
+## Troubleshooting / Tips
 
-# Performance Analysis: calculateFactorial
+*   **Understanding Verification Failures:** PerfCopilot employs a sophisticated **AI-driven Correctness Check** (detailed in "How It Works") to guarantee functional equivalence between your original code and the generated optimizations. This involves automatically generating test cases and executing all function versions. If the analysis reports "0 alternatives passed verification," it signifies that the AI-generated suggestions, while potentially faster, did not produce identical outputs to the original function in this instance.
+*   **What to do:**
+    *   **Retry Analysis:** AI generation has inherent variability. Re-running the analysis often yields correctly verified alternatives.
+    *   **Select a Different AI Model:** If available (via Copilot Chat settings or other providers), switching the underlying AI model can influence generation and verification success for complex functions.
 
-## Summary
-**Alternative 1** is the fastest, approximately **15.2%** faster than the Original implementation.
-
-## Benchmark Results
-| Implementation | Ops/sec  |
-| -------------- | -------- |
-| Alternative 1 ⭐ | 987,654  |
-| Original       | 857,123  |
-| Alternative 2  | 845,999  |
-
-## Explanation
-Alternative 1 utilizes memoization (caching results for previously computed factorials), significantly reducing redundant calculations for repeated calls with the same input within the benchmark loop. The original function recalculates the factorial every time. Alternative 2 (e.g., using recursion without memoization) might be slightly slower due to function call overhead.
-
-## Fastest Implementation (Alternative 1)
-```javascript
-// Example memoized version provided by the AI
-const factorialCache = {};
-const calculateFactorial = (n) => {
-  if (n < 0) return undefined;
-  if (n === 0) return 1;
-  if (factorialCache[n]) return factorialCache[n];
-  let result = 1;
-  for (let i = n; i > 1; i--) {
-    result *= i;
-  }
-  factorialCache[n] = result;
-  return result;
-};
-```
-```
-
-## How It Works (Simplified)
+## How It Works (High-Level)
 
 1.  **Function Extraction:** PerfCopilot identifies the target function from your chat input or editor selection.
-2.  **Alternative Generation:** It prompts the selected AI model (via `vscode.lm`) to create performance-focused alternatives.
-3.  **Benchmark Code Generation:** It asks the AI model to generate a `benny.js` benchmarking script comparing the original and alternatives.
-4.  **Local Benchmarking:** The generated script is run locally using Node.js in a temporary directory (the extension handles installing `benny` temporarily).
-5.  **Result Analysis:** The raw benchmark results (ops/sec) are sent back to the AI model for analysis, explanation, and formatting.
-6.  **Display:** The final formatted analysis is streamed to the VS Code Chat view.
+2.  **AI-Powered Optimization:** Leverages the selected large language model (`vscode.lm`) to generate performance-enhanced code variants.
+3.  **AI-Driven Equivalence Testing:** Performs an automated functional correctness check. The **AI generates relevant test inputs** tailored to your function, and PerfCopilot executes the original and alternative functions against these inputs, ensuring outputs match exactly before proceeding. This critical step guarantees the validity of proposed optimizations.
+4.  **AI-Powered Benchmark Generation:** Instructs the **AI to intelligently construct** a `benny.js` benchmark suite, including appropriate test data, for the original function and all *verified* alternatives.
+5.  **Seamless Local Execution:** Executes the benchmark suite using Node.js in an isolated temporary environment, handling dependencies automatically.
+6.  **AI-Enhanced Result Interpretation:** Feeds the raw performance data (ops/sec) back to the AI for insightful analysis, comparison, and explanation generation.
+7.  **Integrated Chat Display:** Streams the comprehensive performance report directly into the VS Code Chat view.
 
 <!-- ## Contributing (Optional) -->
 <!-- If you plan to accept contributions, add guidelines here -->
