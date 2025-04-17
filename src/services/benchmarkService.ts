@@ -99,119 +99,132 @@ export class BenchmarkService {
      * @throws Error if parsing fails or benchmark reported an error
      */
     private parseBenchmarkResults(output: string): BenchmarkComparison {
-        let jsonString: string | undefined;
-        try {
-             // Refined Regex: Match start of line, RESULTS_JSON:, optional whitespace,
-            // then capture a potentially nested JSON object until the final closing brace on the line.
-            // Explanation:
-            // ^RESULTS_JSON:   - Marker at start of line (m flag)
-            // \s*            - Optional whitespace
-            // (              - Start capture group 1
-            // {              - Match opening brace
-            // (?:[^{}]|{[^]*?})* - Match nested braces correctly: either non-brace chars or a full inner brace pair
-            // }              - Match closing brace
-            // )              - End capture group 1
-            // \s*            - Optional trailing whitespace
-            // $              - End of line (m flag)
-            // CRITICAL: Attempts to parse structured JSON results first (priority)
-            // Looks for the RESULTS_JSON: marker for reliable parsing.
-            const jsonMatch = output.match(/^\s*RESULTS_JSON:\s*(.*)$/m);
-
-            if (jsonMatch && jsonMatch[1]) {
-                jsonString = jsonMatch[1].trim();
-                this.outputChannel.appendLine(`Found RESULTS_JSON line. Preparing to parse...`);
-                // Log the exact string being passed to JSON.parse
-                this.outputChannel.appendLine(`--- String to Parse as JSON ---\n${jsonString}\n-----------------------------`);
-                const parsed = JSON.parse(jsonString);
-
-                // Basic validation of the parsed JSON structure
-                if (parsed && typeof parsed === 'object' && Array.isArray(parsed.results) && typeof parsed.fastest === 'string') {
-                     this.outputChannel.appendLine(`Successfully parsed benchmark JSON.`);
-                    return {
-                        fastest: parsed.fastest || 'Unknown',
-                        results: parsed.results || []
-                    };
-                } else {
-                     this.outputChannel.appendLine(`Warning: Parsed JSON does not have expected structure { results: [], fastest: "" }. Parsed: ${JSON.stringify(parsed)}. Falling back to text parsing.`);
-                     // Fall through to text parsing below
-                }
-            } else {
-                 this.outputChannel.appendLine(`RESULTS_JSON line not found. Falling back to text parsing.`);
-                 // Fall through to text parsing below
-            }
-        } catch (error) {
-            // Catch JSON.parse errors specifically
-            this.outputChannel.appendLine(`Error parsing benchmark results JSON: ${error}. Falling back to text parsing.`);
-            // Log the string that failed parsing
-            if (jsonString !== undefined) { // Only log if we thought we had a string
-                 this.outputChannel.appendLine(`--- Failed JSON String ---\n${jsonString}\n------------------------`);
-            }
-             // Fall through to text parsing below
-        }
-        
-        // Fallback: Check for BENCHMARK_ERROR before attempting text parsing
-        // CRITICAL: Explicitly checks for BENCHMARK_ERROR marker from the script.
-        const errorMatch = output.match(/^BENCHMARK_ERROR:\s*({[\s\S]*?})$/m);
+        // Check for BENCHMARK_ERROR first, as it indicates a fatal script error
+        const errorMatch = output.match(/^BENCHMARK_ERROR:(.*)$/m);
         if (errorMatch && errorMatch[1]) {
-            this.outputChannel.appendLine(`Found BENCHMARK_ERROR line: ${errorMatch[1]}`);
-             // Throw an error instead of returning a specific structure
-             throw new Error(`Benchmark script reported error: ${errorMatch[1]}`);
+            const errorMessage = errorMatch[1].trim();
+            this.outputChannel.appendLine(`Found BENCHMARK_ERROR line: ${errorMessage}`);
+            throw new Error(`Benchmark script reported error: ${errorMessage}`);
         }
 
-        // Fallback to text parsing if JSON parsing failed or wasn't applicable
-        this.outputChannel.appendLine('Attempting to parse benchmark results using text format...');
-        const textResults = this.parseTextBenchmarkOutput(output);
-        if (textResults.results.length > 0) {
-            this.outputChannel.appendLine('Successfully parsed benchmark results from text output.');
-            return textResults;
-        } else {
-             this.outputChannel.appendLine('Warning: Could not parse results from text output either. Returning empty results.');
-             // Return default empty results if text parsing also fails
-             return { fastest: 'Unknown', results: [] }; 
+        // Prioritize parsing the text output format we now expect
+        this.outputChannel.appendLine('Attempting to parse benchmark results using text format (cycle:/complete:)...');
+        try {
+            // !!! CRITICAL PARSING LOGIC !!!
+            // This calls parseTextBenchmarkOutput which relies on specific string formats
+            // ("cycle: Name: ..." and "complete: Fastest is ...") produced by 
+            // `src/utils/benchmarkRunner.ts`. Changes to the output format in the runner
+            // MUST be reflected in the regexes within `parseTextBenchmarkOutput`.
+            const textResults = this.parseTextBenchmarkOutput(output);
+            // Check if parsing yielded valid results
+            if (textResults.results.length > 0 && textResults.fastest !== 'Unknown') {
+                this.outputChannel.appendLine('Successfully parsed benchmark results from text output.');
+                return textResults;
+            } else {
+                this.outputChannel.appendLine('Warning: Text parsing did not yield valid results. Output might be malformed or empty.');
+                // Fall through to return default empty results if text parsing fails
+            }
+        } catch (parseError) {
+             this.outputChannel.appendLine(`Error during text parsing: ${parseError}. Output might be malformed.`);
+              // Fall through to return default empty results if text parsing fails
         }
+
+        // If all parsing attempts fail, return default empty results
+        this.outputChannel.appendLine('Warning: All parsing attempts failed. Returning empty results.');
+        return { fastest: 'Unknown', results: [] };
     }
     
     /**
-     * Parses benchmark results from plain text output.
-     * CRITICAL: Fallback parsing logic for Benny's standard text output if JSON fails.
-     * This ensures results can still be shown even if JSON parsing breaks.
+     * Parses benchmark results from plain text output based on "cycle:" and "complete:" lines.
      * 
      * @param output - The text output from the benchmark
      * @returns The parsed benchmark comparison results
      */
     private parseTextBenchmarkOutput(output: string): BenchmarkComparison {
-        // Parse lines like "  original x 1,234,567 ops/sec ±0.12% (95 runs sampled)"
-        // Regex explanation:
-        // ^\s*        - Start of line, followed by optional whitespace
-        // ([^\n\r]+?) - Capture group 1: Capture any character except newline/carriage return (non-greedy) - this is the name on the *same* line
-        // \s+x\s+      - Match " x " (with surrounding whitespace)
-        // ([\d,\.]+)   - Capture group 2: Capture digits, commas, periods (the ops/sec number)
-        // \s+ops\/sec   - Match " ops/sec"
-        // .*            - Match the rest of the line
-        const resultRegex = /^\s*([^\n\r]+?)\s+x\s+([\d,\.]+)\s+ops\/sec.*/gm;
+        // DEFINE REGEXES INSIDE THE FUNCTION
+        
+        // !!! CRITICAL REGEX: cycleRegex !!!
+        // This regex parses lines like "cycle: Name: Original, Ops: 574078.7033043295"
+        // It specifically captures the Name and the Ops value.
+        // REASON: Extracts performance data for each implementation.
+        // DO NOT MODIFY without ensuring it exactly matches the output format of
+        // the `benny.cycle` handler in `src/utils/benchmarkRunner.ts`.
+        // Regex for "cycle: Name: ..., Ops: ..."
+        // ^cycle:      - Start of line anchor and marker
+        // \s*Name:\s* - Match "Name:" with optional surrounding whitespace
+        // ([^,]+?)    - Capture Group 1: The name (any char except comma, non-greedy)
+        // \s*,\s*Ops:\s* - Match ", Ops:" with optional surrounding whitespace
+        // ([\d.]+)    - Capture Group 2: The Ops/sec value (digits and decimal point)
+        const cycleRegex = /^cycle:\s*Name:\s*([^,]+?)\s*,\s*Ops:\s*([\d.]+)/gm;
+        
+        // !!! CRITICAL REGEX: completeRegex !!!
+        // This regex parses the line "complete: Fastest is Alternative_2"
+        // It specifically captures the name of the fastest implementation.
+        // REASON: Identifies the winning implementation.
+        // DO NOT MODIFY without ensuring it exactly matches the output format of
+        // the `benny.complete` handler in `src/utils/benchmarkRunner.ts`.
+        // Regex for "complete: Fastest is ..."
+        // ^complete:     - Start of line anchor and marker
+        // \s*Fastest is\s* - Match "Fastest is" with optional surrounding whitespace
+        // (.+?)         - Capture Group 1: The name of the fastest implementation (non-greedy)
+        // \s*$          - Optional trailing whitespace and end-of-line anchor
+        const completeRegex = /^complete:\s*Fastest is\s*(.+?)\s*$/m;
+
+        // +++ TEST DEBUG LOG +++
+        console.log('\n[parseTextBenchmarkOutput TEST DEBUG] Input string:\n---\n', output, '\n---');
+        // +++ END TEST DEBUG LOG +++
+
         const results = [];
         let match;
         
-        while ((match = resultRegex.exec(output)) !== null) {
+        this.outputChannel.appendLine('--- Parsing cycle lines ---');
+        // +++ TEST DEBUG LOG +++
+        console.log('[parseTextBenchmarkOutput TEST DEBUG] Entering cycleRegex loop...');
+        // +++ END TEST DEBUG LOG +++
+        while ((match = cycleRegex.exec(output)) !== null) {
+            // +++ TEST DEBUG LOG +++
+            console.log('[parseTextBenchmarkOutput TEST DEBUG] cycleRegex match:', match);
+            // +++ END TEST DEBUG LOG +++
             const name = match[1].trim();
-            // Ensure ops are parsed correctly, removing commas
-            const ops = parseFloat(match[2].replace(/,/g, '')); 
+            const ops = parseFloat(match[2]);
+            this.outputChannel.appendLine(`  Matched cycle: Name='${name}', Ops=${ops}`);
             
-            // Skip if ops parsing failed (NaN)
             if (isNaN(ops)) {
-                this.outputChannel.appendLine(`Warning: Could not parse ops for benchmark case: ${name}`);
+                this.outputChannel.appendLine(`  Warning: Could not parse ops for benchmark case: ${name}. Input: ${match[2]}`);
                 continue;
             }
 
             // Add margin: 0 to satisfy the BenchmarkResultItem type
             results.push({ name, ops, margin: 0 }); 
         }
+        this.outputChannel.appendLine('--- Finished parsing cycle lines ---');
         
-        // Sort results by ops descending to find the fastest
-        results.sort((a, b) => b.ops - a.ops);
+        // Parse the completion line
+        this.outputChannel.appendLine('--- Parsing complete line ---');
+        const completeMatch = output.match(completeRegex);
+        // +++ TEST DEBUG LOG +++
+        console.log('[parseTextBenchmarkOutput TEST DEBUG] completeRegex match:', completeMatch);
+        // +++ END TEST DEBUG LOG +++
+        let fastest = 'Unknown';
+        if (completeMatch && completeMatch[1]) {
+            fastest = completeMatch[1].trim();
+             this.outputChannel.appendLine(`  Matched complete: Fastest='${fastest}'`);
+        } else {
+             this.outputChannel.appendLine('  Complete line not found or could not be parsed.');
+        }
+         this.outputChannel.appendLine('--- Finished parsing complete line ---');
         
-        const fastest = results.length > 0 ? results[0].name : 'Unknown';
+        // If results were parsed but fastest wasn't found on complete line, determine from results
+        if (fastest === 'Unknown' && results.length > 0) {
+             this.outputChannel.appendLine('  Determining fastest from parsed cycle results...');
+            results.sort((a, b) => b.ops - a.ops);
+            fastest = results[0].name;
+             this.outputChannel.appendLine(`  Fastest determined as: ${fastest}`);
+        }
         
+        // +++ TEST DEBUG LOG +++
+        console.log(`[parseTextBenchmarkOutput TEST DEBUG] Returning: { fastest: "${fastest}", results: ${JSON.stringify(results)} }`);
+        // +++ END TEST DEBUG LOG +++
         return {
             fastest,
             results
@@ -220,9 +233,19 @@ export class BenchmarkService {
 
     /**
      * Helper function to replace the definition and internal recursive calls of a function.
-     * CRITICAL: Renames function definitions AND internal recursive calls.
-     * This allows alternatives to run in the isolated vm context of the runner 
-     * without name collisions and ensures recursion within an alternative calls itself correctly.
+     * !!! CRITICAL HELPER FUNCTION: replaceRecursiveCalls !!!
+     * REASON: This function is essential for correctly preparing function code strings 
+     *         to run inside the isolated `vm` context of `benchmarkRunner.ts`.
+     *         1. Renames the function definition (e.g., `myFunc` to `Alternative_1`) 
+     *            to avoid naming collisions within the runner's scope.
+     *         2. Renames internal recursive calls within the function's body to use 
+     *            the new name (e.g., `myFunc()` becomes `Alternative_1()`). This ensures 
+     *            recursive alternatives call themselves correctly, not the original function.
+     *         3. Handles different function declaration styles (const arrow func, standard function).
+     * DO NOT MODIFY this logic without careful consideration of how functions are 
+     * executed and potentially recurse within the `vm` sandbox environment.
+     * Failure here can lead to `ReferenceError`s in the runner or incorrect benchmark results
+     * if recursion calls the wrong implementation.
      * 
      * @param code - The string containing the function code.
      * @param originalName - The original name of the function.
@@ -297,6 +320,4 @@ export class BenchmarkService {
     // **Potential Issue:** How are recursive calls handled?
     // We need to replace calls to `entryPoint` within each function body
     // with calls to the new sanitized name for that specific implementation.
-
-    // Process Original Function
 }
